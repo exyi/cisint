@@ -48,6 +48,7 @@ let rec exprToString expr =
                     | InstructionFunction.Box
                     | InstructionFunction.Unbox
                     | InstructionFunction.Cast -> failwith ""
+                    | _ -> failwith ""
         sprintf "(%s %s %s)" (exprToString a) op (exprToString b)
     | SExprNode.InstructionCall (InstructionFunction.Not, _, args) -> sprintf "!%s" (args.arr |> Seq.exactlyOne |> exprToString)
     | SExprNode.InstructionCall (InstructionFunction.Negate, _, args) -> sprintf "-%s" (args.arr |> Seq.exactlyOne |> exprToString)

@@ -165,7 +165,7 @@ let ``simplifier smoke test`` () =
         ExprFormat.exprToString (simplifier emptyAS expr2))
     let expr3 = ExprSimplifier.createExprFromQuot <@ fun a b -> b + (a - b) - a @> [paramA; paramB]
     Assert.Equal("0", (ExprFormat.exprToString (simplifier emptyAS expr3)))
-    // Assert.Equal(
-    //     simplifier emptyAS expr1,
-    //     expr1
-    // )
+    Assert.Equal(
+        simplifier emptyAS expr1,
+        simplifier emptyAS expr2
+    )
