@@ -5,10 +5,13 @@ open Expression
 open Mono.Cecil
 open System.Collections.Generic
 open System.Linq
+open InterpreterState
+open System.Collections.Generic
+open TypesystemDefinitions
 
 type SimplifierPattern = {
     Variables: SParameter array
-    TypeVars: TypeReference array
+    TypeVars: TypeRef array
     EqExpressions: (SExpr) array
 }
 
@@ -45,10 +48,15 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
                     | "op_Equality" -> Some InstructionFunction.C_Eq
                     | "op_GreaterThan" -> Some InstructionFunction.C_Gt
                     | "UnboxGeneric" -> Some InstructionFunction.Cast
+                    | "Not" -> Some InstructionFunction.Not
                     | a when a.StartsWith "To" -> Some InstructionFunction.Convert
                     | _ -> failwith "nevim jak"
-                else if m.IsGenericMethod && m.GetGenericMethodDefinition() = typeof<Marker>.DeclaringType.GetMethod("castAs") then
+                elif m.IsGenericMethod && m.GetGenericMethodDefinition() = typeof<Marker>.DeclaringType.GetMethod("castAs") then
                     Some InstructionFunction.IsInst
+                elif m = typeof<Marker>.DeclaringType.GetMethod("justOr") then
+                    Some InstructionFunction.Or
+                elif m = typeof<Marker>.DeclaringType.GetMethod("justAnd") then
+                    Some InstructionFunction.And
                 else
                     None
             match instuctionFunction with
@@ -63,6 +71,8 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
             SExpr.LdField (CecilTools.convertFieldInfo f) (Option.map (translate aliases) var)
         | QP.Value (value, vtype) ->
             SExpr.New (CecilTools.convertType vtype) (SExprNode.Constant value)
+        | QP.IfThenElse (c, a, b) ->
+            SExpr.Condition (translate aliases c) (translate aliases a) (translate aliases b)
         | _ -> failwithf "Not supported quotation: %A" q
 
     let rec stripLambdas q =
@@ -77,15 +87,15 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
 
     translate aliases quotationbody
 
-let createPattern (parameters: #seq<TypeReference>) (patterns: #seq<array<SParameter> -> SExpr>) =
+let createPattern (parameters: #seq<TypeRef>) (patterns: #seq<array<SParameter> -> SExpr>) =
     let p = parameters |> IArray.ofSeq |> IArray.mapi (fun index a -> SParameter.New a (sprintf "p%d" index))
     let exprs = patterns |> IArray.ofSeq |> IArray.map (fun f -> f p)
     { SimplifierPattern.Variables = p; TypeVars = array<_>.Empty; EqExpressions = exprs }
 
 let createPatternFromQuot (parameters: #seq<System.Type>) (patterns: #seq<Quotations.Expr>) =
-    createPattern (Seq.map (fun x -> CecilTools.convertType x :> TypeReference) parameters) (Seq.map createExprFromQuot patterns)
+    createPattern (Seq.map (fun x -> CecilTools.convertType x) parameters) (Seq.map createExprFromQuot patterns)
 
-let private assignTypeParam (typeParameter: TypeReference) (assignee: TypeReference) =
+let private assignTypeParam (typeParameter: TypeRef) (assignee: TypeRef) =
     let rec v = SExpr.Visitor (fun node visitChildren ->
         let node = visitChildren node
         if node.ResultType = typeParameter then
@@ -112,7 +122,7 @@ let private mergeAssignments (a: #seq<(SExpr option) array>) =
     if ok then Ok result else Error ()
 
 /// Returns resolved variables of the pattern based on the provided expression
-let rec patternMatch (expr: SExpr) (pattern: SExpr) (vars: SParameter array) (typeVars: TypeReference array) : Result<(SExpr option) array, unit> =
+let rec patternMatch (expr: SExpr) (pattern: SExpr) (vars: SParameter array) (typeVars: TypeRef array) : Result<(SExpr option) array, unit> =
     let recurse (args: (SExpr * SExpr) seq) =
         Seq.foldBack (fun (e, p) state ->
             state |> Result.bind (fun state_p ->
@@ -168,8 +178,22 @@ let assignParameters (mapping: SParameter -> SExpr option) =
         | _ -> None
     )
 
+/// (from, to) set
+let private lossLessConversions =
+    new HashSet<struct (TypeRef * TypeRef)>([
+        struct (CecilTools.boolType, CecilTools.intType)
+    ])
 let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
-    match expr with
+    match expr.Node with
+    | SExprNode.InstructionCall (InstructionFunction.Convert, convertTo, EqArray.AP [ { Node = SExprNode.InstructionCall(InstructionFunction.Convert, convertFrom, EqArray.AP [insideExpr]) } as convExpr ])
+        when convertTo = insideExpr.ResultType && lossLessConversions.Contains (struct (convertTo, convertFrom)) ->
+        if insideExpr.ResultType = convertTo then
+            insideExpr
+        else SExpr.InstructionCall InstructionFunction.Convert convertTo [ insideExpr ]
+    | SExprNode.InstructionCall (InstructionFunction.Convert, convertTo, EqArray.AP [ insideExpr ])
+        when insideExpr.ResultType = convertTo ->
+        insideExpr
+
     | _ -> expr
 
 let private getExprBaseKey =
@@ -184,7 +208,7 @@ let private getExprBaseKey =
     | SExprNode.Condition _ -> "if"
     | SExprNode.LValue lv -> "lv_" + getLValueKey lv
     | SExprNode.Reference lv -> "rf_" + getLValueKey lv
-    | SExprNode.PureCall (method, _) -> "pc_" + (string method.MetadataToken.RID)
+    | SExprNode.PureCall (method, _) -> "pc_" + (string method.Reference.MetadataToken.RID)
     | SExprNode.InstructionCall (i, _, _) -> "ic_" + string i
 
 type private PatternMap = {
@@ -238,8 +262,8 @@ let private simplifyExpressionCore (map: PatternMap) (assumptions: AssumptionSet
 
 let rec private simplifyExpression map assumptions a =
     let s = simplifyExpressionCore map assumptions a
-    if ExprCompare.exprCompare s a > 0 then
-        failwithf "WTF, %s was \"simplified\" into %s" (ExprFormat.exprToString a) (ExprFormat.exprToString s)
+    // if ExprCompare.exprCompare s a > 0 then
+    //     failwithf "WTF, %s was \"simplified\" into %s" (ExprFormat.exprToString a) (ExprFormat.exprToString s)
     if System.Object.ReferenceEquals(s, a) || s = a then
         s
     else
@@ -307,6 +331,19 @@ let createSimplifier (patterns: #seq<SimplifierPattern>) =
     let pmap = buildPatternMap patterns
     simplifyExpression pmap
 
-// let defaultPatterns = [
-//     {}
-// ]
+let defaultPatterns = [
+    createPatternFromQuot
+        [ typeof<bool>; typeof<bool> ]
+        [ <@ fun a b -> not (justAnd a b) @>; <@ fun a b -> justOr (not a) (not b) @> ]
+    createPatternFromQuot
+        [ typeof<bool>; ]
+        [ <@ fun a -> not (not a) @>; <@ fun a -> a @> ]
+    createPatternFromQuot
+        [ typeof<bool>; typeof<bool>; typeof<bool> ]
+        [ <@ fun a b c -> if c then a else b @>; <@ fun a b c -> if not c then b else a @> ]
+    createPatternFromQuot
+        [ typeof<int>; typeof<int> ]
+        [ <@ fun a b -> a < b @>; <@ fun a b -> b > a @> ]
+]
+
+let simplify = createSimplifier defaultPatterns

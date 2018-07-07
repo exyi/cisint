@@ -1,4 +1,4 @@
-module Tests
+module BasicUnitTests
 
 open Cisint.Core
 open Expression
@@ -8,19 +8,28 @@ open System.Collections.Generic
 open Expression
 open Expression
 open System.Collections.Generic
+open InterpreterState
 
 [<Fact>]
 let ``Cecil smoke test`` () =
-    let tt = struct (1, 2)
     let testType : Type = typeof<Cisint.Tests.TestInputs.Something>
     let containsXOR = Intro.methodContainsXOR testType.Assembly.Location testType.FullName "A"
     Assert.True containsXOR
 
 [<Fact>]
+let ``Test input`` () =
+    let testType = typeof<Cisint.Tests.TestInputs.Something> |> CecilTools.convertType
+    let m = testType.Definition.Methods |> Seq.find (fun m -> m.Name = "WithExceptionHandler")
+    Assert.True(m.Body.HasExceptionHandlers)
+    Assert.Equal(1, m.Body.ExceptionHandlers.Count)
+    // m.Body.Instructions |> Seq.iter (printfn "%O")
+    // m.Body.ExceptionHandlers |> Seq.iter (printfn "%O")
+
+[<Fact>]
 let ``expression comparison`` () =
     let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
     let paramB = SParameter.New (CecilTools.convertType typeof<int>) "b"
-    Assert.True(Object.ReferenceEquals(paramA.Type, paramB.Type), "same types are not equal")
+    Assert.True(paramA.Type = paramB.Type, "same types are not equal")
     Assert.Equal(paramA.Type, paramB.Type)
     Assert.Equal((SExpr.Parameter paramA).Node, (SExpr.Parameter paramA).Node)
     let someParamExpr = SExpr.Parameter paramA
@@ -168,4 +177,37 @@ let ``simplifier smoke test`` () =
     Assert.Equal(
         simplifier emptyAS expr1,
         simplifier emptyAS expr2
+    )
+
+[<Fact>]
+let ``simplifier constant collection test`` () =
+    let simplifier = ExprSimplifier.createSimplifier basePatterns
+    let emptyAS = AssumptionSet.empty
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let paramB = SParameter.New (CecilTools.convertType typeof<int>) "b"
+    let expr1 = ExprSimplifier.createExprFromQuot <@ fun a b -> a + 1 + b + 23 @> [paramA; paramB]
+    let expr2 = ExprSimplifier.createExprFromQuot <@ fun a b -> b + a + 23 + 1 @> [paramA; paramB]
+
+    Assert.Contains(
+        "(1 + 23)",
+        ExprFormat.exprToString (simplifier emptyAS expr1)
+    )
+    Assert.Equal(
+        simplifier emptyAS expr1,
+        simplifier emptyAS expr2
+    )
+
+// [<Fact>]
+let ``default simplifier conditions`` () =
+    let emptyAS = AssumptionSet.empty
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let paramB = SParameter.New (CecilTools.convertType typeof<int>) "b"
+    let expr1 = ExprSimplifier.createExprFromQuot <@ fun a b -> if a < b then a else b @> [paramA; paramB]
+    let expr2 = ExprSimplifier.createExprFromQuot <@ fun a b -> if not (a < b) then b else a @> [paramA; paramB]
+
+    printfn "%s" (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr1))
+    printfn "%s" (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr2))
+    Assert.Equal(
+        ExprSimplifier.simplify emptyAS expr1,
+        ExprSimplifier.simplify emptyAS expr2
     )

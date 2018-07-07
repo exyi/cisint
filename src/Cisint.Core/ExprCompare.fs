@@ -10,11 +10,11 @@ let private getExprBaseKey =
         | SLExprNode.LdElement _ -> "lde"
         | SLExprNode.LdField _ -> "ldf"
     function
-    | SExprNode.Constant _ -> "AAA"
+    | SExprNode.Constant _ -> "ZZZ"
     | SExprNode.Condition _ -> "Y"
     | SExprNode.LValue lv -> "E_" + getLValueKey lv
     | SExprNode.Reference lv -> "rf_" + getLValueKey lv
-    | SExprNode.PureCall (method, _) -> "pc_" + (string method.MetadataToken.RID)
+    | SExprNode.PureCall (method, _) -> "pc_" + (string method.Reference.MetadataToken.RID)
     | SExprNode.InstructionCall (i, _, _) -> "B_" + i.ToString()
 
 // ((a + b) + (c + d)) > (a + (b + (c + d)))
@@ -66,7 +66,7 @@ let rec exprCompare (a: SExpr) (b: SExpr) =
                 when field = field_p ->
                 recurse [ e, e_p ]
             | (SLExprNode.LdField (field_a, _), SLExprNode.LdField (field_b, _)) ->
-                field_a.FullName.CompareTo(field_b.FullName)
+                field_a.ToString().CompareTo(field_b.ToString())
             | (SLExprNode.LdElement (target, index), SLExprNode.LdElement (target_p, index_p)) ->
                 recurse [ target, target_p ; index, index_p ]
             | (SLExprNode.Parameter a, SLExprNode.Parameter b) ->
@@ -90,7 +90,7 @@ let rec exprCompare (a: SExpr) (b: SExpr) =
         when method = method_p && args.arr.Length = args_p.arr.Length ->
         recurse (Seq.zip args.arr args_p.arr)
     | (SExprNode.PureCall (method_a, args_a), SExprNode.PureCall (method_b, args_b)) ->
-        compareObj (method_a.FullName, args_a.arr.Length) (method_b.FullName, args_b.arr.Length)
+        compareObj (method_a.ToString(), args_a.arr.Length) (method_b.ToString(), args_b.arr.Length)
     | (SExprNode.LValue lv, SExprNode.LValue lv_p) -> procLValue lv lv_p
     | (SExprNode.Reference lv, SExprNode.Reference lv_p) -> procLValue lv lv_p
     | (SExprNode.Constant c_a, SExprNode.Constant c_b) ->

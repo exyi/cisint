@@ -1,11 +1,14 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>netcoreapp2.0</TargetFramework>
-    <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Cisint.Core\Cisint.Core.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
     <Compile Include="TestInputs.fs" />
-    <Compile Include="Tests.fs" />
+    <Compile Include="BasicUnitTests.fs" />
+    <Compile Include="InterpreterTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
@@ -18,8 +21,5 @@
     <PackageReference Include="FSharp.Core" Version="4.3.4" />
     <PackageReference Include="System.ValueTuple" Version="4.5.0" />
     <DotNetCliToolReference Include="dotnet-xunit" Version="2.3.1" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\Cisint.Core\Cisint.Core.fsproj" />
   </ItemGroup>
 </Project>

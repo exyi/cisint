@@ -1,8 +1,8 @@
 module Expression
-open Mono.Cecil
 open System
 open System.Collections.Immutable
 open System.Threading
+open TypesystemDefinitions
 
 //type SExprConfig = {
 //    CheckedArtithmetic: bool
@@ -15,13 +15,18 @@ type InstructionFunction =
     | C_Eq = 3
     | C_Gt = 4
     | C_Lt = 5
+    /// see Table 8: Conversion Operations, page 330
     | Convert = 6
     | Convert_Checked = 7
     | Div = 8
     | IsInst = 9
     | Mul = 10
+    /// Twos-complement negation, aka minus
     | Negate = 11
+    /// Bool negation
     | Not = 12
+    /// Bitwise negation
+    | BitNot = 21
     | Or = 13
     | Rem = 14
     | Shr = 15
@@ -46,7 +51,7 @@ with
     member x.Num = let (AssumptionSetVersion a) = x in a
 
 type SParameter = {
-    Type: TypeReference
+    Type: TypeRef
     Name: string
     Id: Guid
 }
@@ -55,7 +60,7 @@ with static member New resultType name =
 
 [<StructuralEqualityAttribute>] [<NoComparisonAttribute>]
 type SLExprNode =
-    | LdField of FieldReference * target: SExpr option
+    | LdField of FieldRef * target: SExpr option
     | LdElement of target: SExpr * index: SExpr
     | Parameter of SParameter
     | Dereference of SExpr
@@ -63,12 +68,12 @@ type SLExprNode =
 and SExprNode =
     | Reference of SLExprNode
     | LValue of SLExprNode
-    | PureCall of MethodReference * args: SExpr EqArray
-    | InstructionCall of InstructionFunction * TypeReference * args: SExpr EqArray
+    | PureCall of MethodRef * args: SExpr EqArray
+    | InstructionCall of InstructionFunction * TypeRef * args: SExpr EqArray
     | Condition of condition: SExpr * ifTrue: SExpr * ifFalse: SExpr
     | Constant of obj
 and SExpr = {
-    ResultType: TypeReference
+    ResultType: TypeRef
     NodeLeavesRank: int
     NodeCountRank: int
     Node: SExprNode
@@ -81,7 +86,7 @@ with
         { SExpr.Node = node; ResultType = resultType; SimplificationVersion = AssumptionSetVersion.None; NodeLeavesRank = lRank; NodeCountRank = cRank }
      static member PureCall method (args: #seq<_>) =
         let node = PureCall (method, ImmutableArray.CreateRange(args) |> EqArray.New)
-        SExpr.New method.ReturnType node
+        SExpr.New (TypeRef method.Reference.ReturnType) node
      static member InstructionCall func resultType (args: #seq<_>) =
         let node = InstructionCall (func, resultType, ImmutableArray.CreateRange(args) |> EqArray.New)
         SExpr.New resultType node
@@ -90,10 +95,10 @@ with
         SExpr.New p.Type node
      static member LdField field target =
         let node = LValue (LdField (field, target))
-        SExpr.New field.FieldType node
+        SExpr.New (TypeRef field.Reference.FieldType) node
      static member Condition cond ifTrue ifFalse =
         assert (ifTrue.ResultType = ifFalse.ResultType)
-        assert (cond.ResultType.MetadataType = MetadataType.Boolean)
+        assert (cond.ResultType.Reference.MetadataType = Mono.Cecil.MetadataType.Boolean)
         let node = Condition (cond, ifTrue, ifFalse)
         SExpr.New ifTrue.ResultType node
      static member ImmConstant<'a> (value: 'a) =
@@ -121,7 +126,7 @@ with
             func node visitChildren |> Option.defaultWith (fun () -> visitChildren node)
         core
      static member private CountExprNodes node =
-        let expr = { SExpr.ResultType = null; SimplificationVersion = AssumptionSetVersion.None; Node = node; NodeLeavesRank = -1; NodeCountRank = -1 }
+        let expr = { SExpr.ResultType = CecilTools.generalSentinelType; SimplificationVersion = AssumptionSetVersion.None; Node = node; NodeLeavesRank = -1; NodeCountRank = -1 }
         let countExprNodes a =
             let mutable nodeCounter = 0
             let mutable leavesCounter = 0
@@ -137,36 +142,12 @@ with
                 Some e) a |> ignore
             struct (nodeCounter + 1, leavesCounter)
         countExprNodes expr
+     static member BoolNot node =
+        let node =
+            if node.ResultType.Reference.MetadataType = Mono.Cecil.MetadataType.Boolean then node
+            else SExpr.InstructionCall InstructionFunction.Convert CecilTools.boolType [ node ]
+        SExpr.InstructionCall InstructionFunction.Not CecilTools.boolType [ node ]
     // static member AreSameType a b =
     //     match (a, b) with
     //     | (Condition (_, _, _), Condition (_, _, _)) -> true
     //     | (InstructionCall (_, _, _), InstrucitonCall (_, _, _)) ->
-
-
-[<CustomEquality>]
-[<NoComparisonAttribute>]
-type AssumptionSet = {
-    Version: AssumptionSetVersion
-    /// Set of expressions that are known to return true
-    Set: ImmutableHashSet<SExpr>
-} with
-    interface IEquatable<AssumptionSet> with
-        member a.Equals(b) = a.Set.SetEquals(b.Set)
-    override a.Equals b =
-        match b with
-        | :? AssumptionSet as y -> a.Set.SetEquals(y.Set)
-        | _ -> false
-    override a.GetHashCode() =
-        printfn "warn AssumptionSet.GetHashCode";
-        failwith ""
-        a.Set.Count // TODO
-
-module AssumptionSet =
-
-    let mutable private assumptionSetVersionCounter = 1L
-    let private nextASVersion () =
-        Interlocked.Increment(&assumptionSetVersionCounter) |> AssumptionSetVersion
-    let empty = { Version = AssumptionSetVersion 0L; Set = ImmutableHashSet.Create<SExpr>() }
-    // TODO: cache these guys, so ids remain the same for same version
-    let add (assumptions: #seq<SExpr>) x =
-        { x with Set = x.Set.Union(assumptions); Version = nextASVersion () }

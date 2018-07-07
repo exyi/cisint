@@ -30,6 +30,8 @@ with
 module EqArray =
     let New arr = { EqArray.arr = arr }
     let OfSeq (s: #seq<_>) = New (ImmutableArray.CreateRange s)
+    let inline (|AP|) arr =
+      List.ofSeq arr.arr
 
 module IArray =
   // PERF: maybe these should inline
@@ -76,6 +78,9 @@ let castAs<'T when 'T : null> (o:obj) =
   match o with
   | :? 'T as res -> res
   | _ -> null
+
+let justAnd a b = a && b
+let justOr a b = a || b
 
 let waitForDebug () =
   if not(System.Diagnostics.Debugger.IsAttached) then
