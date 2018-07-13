@@ -426,7 +426,7 @@ let interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args: SE
                     let argCount = if m.Reference.HasThis then 1 + m.Reference.Parameters.Count else m.Reference.Parameters.Count
                     let args = t.State.Stack |> Seq.take argCount |> Seq.rev |> IArray.ofSeq
                     // TODO: mark everything reachable as shared
-                    let effect = SideEffect.MethodCall (m, result, args, virt, true)
+                    let effect = SideEffect.MethodCall (m, result, args, virt, true, state.Assumptions)
                     let state = { t.State with Stack = List.skip argCount t.State.Stack }
                     let state = { state with SideEffects = state.SideEffects.Add(SExpr.ImmConstant true, effect) }
                     let state =

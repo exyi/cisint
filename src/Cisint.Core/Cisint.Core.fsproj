@@ -9,8 +9,8 @@
     <Compile Include="Expr.fs" />
     <Compile Include="InterpreteterState.fs" />
     <Compile Include="ExprCompare.fs" />
-    <Compile Include="ExprFormat.fs" />
     <Compile Include="ExprSimplifier.fs" />
+    <Compile Include="ExprFormat.fs" />
     <Compile Include="Interpreter.fs" />
     <Compile Include="Library.fs" />
   </ItemGroup>

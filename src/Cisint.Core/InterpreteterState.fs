@@ -50,10 +50,10 @@ module AssumptionSet =
 type ConditionalEffect = (SExpr * SideEffect)
 
 and SideEffect =
-    | MethodCall of MethodRef * resultValue: SParameter * args: SExpr array * virt: bool * globalEffect: bool
-    | FieldWrite of SParameter option * FieldRef
-    | FieldRead of SParameter option * FieldRef * resultValue: SParameter
-    | Throw of SParameter
+    | MethodCall of MethodRef * resultValue: SParameter * args: SExpr array * virt: bool * globalEffect: bool * atState: AssumptionSet
+    | FieldWrite of target: SParameter option * FieldRef * value: SParameter * atState: AssumptionSet
+    | FieldRead of target: SParameter option * FieldRef * resultValue: SParameter * atState: AssumptionSet
+    | Throw of value: SParameter * atState: AssumptionSet
     | Effects of ConditionalEffect array
 
 type ExecutionState = {

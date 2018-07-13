@@ -53,7 +53,8 @@ let ``Simple side effects`` () = task {
     let! result1 = Interpreter.interpretMethod (testMethod "WithSideEffects") state [ SExpr.Parameter paramX; SExpr.Parameter paramY ] dispatcher
     // let! result2 = Interpreter.interpretMethod method state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
 
-    let formatted = result1 |> ExprFormat.printStateEffects
+    let formatted = result1 |> ExprFormat.dumpState
+    printfn "%s" formatted
     Assert.Contains("Cisint.Tests.TestInputs.Something::SideEffect2", formatted)
     Assert.Contains("Cisint.Tests.TestInputs.Something::SideEffect1", formatted)
     Assert.Contains("(x * 2)", formatted)
