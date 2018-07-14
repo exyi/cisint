@@ -271,19 +271,18 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
     elif op = OpCodes.Call || op = OpCodes.Callvirt then
         let method = instr.Operand :?> MethodReference
         let returnI = if prefixes.Tail then None; else Some instr.Next
+        let args, state = state.PopStack (method.Parameters.Count + if method.HasThis then 1 else 0)
         if op = OpCodes.Callvirt && prefixes.Constained.IsSome then
             let overridenMethod = findOverridenMethod (TypeRef prefixes.Constained.Value) (MethodRef method)
             if TypeRef.AreSameTypes overridenMethod.Reference.DeclaringType prefixes.Constained.Value then
                 // the function is overriden -> invoke it directly
-                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (overridenMethod, returnI, false) } ]
+                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (overridenMethod, args, returnI, false) } ]
             else
                 // it's not overriden -> invoke the base implementation with boxing and stuff
-                let args = List.take (method.Parameters.Count + 1) state.Stack |> List.rev
-                let args = ((SExpr.InstructionCall InstructionFunction.Box CecilTools.objType [ SExpr.Dereference args.Head ]) :: args.Tail) |> List.rev
-                let state = { state with Stack = List.append args (List.skip (method.Parameters.Count + 1) state.Stack) }
-                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, returnI, false) } ]
+                let args = ((SExpr.InstructionCall InstructionFunction.Box CecilTools.objType [ SExpr.Dereference args.Head ]) :: args.Tail)
+                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, args, returnI, false) } ]
         else
-            InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, returnI, op = OpCodes.Callvirt) } ]
+            InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, args, returnI, op = OpCodes.Callvirt) } ]
 
     elif op = OpCodes.Ldarg || op = OpCodes.Ldarg_S then getLocal (arguments.[(instr.Operand :?> ParameterDefinition).Index])
     elif op = OpCodes.Ldarg_0 then getLocal (arguments.[0])
@@ -318,6 +317,16 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
     elif op = OpCodes.Ldind_R8 then loadIndirect (Some (CecilTools.convertType typeof<float>))
     elif op = OpCodes.Ldind_Ref then loadIndirect None // may load any reference type
 
+    elif op = OpCodes.Newobj then
+        // TODO: Delegates
+        let constructor = instr.Operand :?> Mono.Cecil.MethodReference
+        let args, state = state.PopStack constructor.Parameters.Count
+        let object, state = createEmptyHeapObject (TypeRef constructor.DeclaringType) state
+        let state = { state with Stack = SExpr.Parameter object :: state.Stack }
+        let returnI = if prefixes.Tail then None; else Some instr.Next
+        InterpretationResult.Branching [
+            { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef constructor, SExpr.Parameter object :: args, returnI, false) }
+        ]
     else tooComplicated <| sprintf "unsupported instruction %O" instr
 
 let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args: SExpr array) (dispatchFrame: InterpreterFrameDispatcher) =
@@ -376,15 +385,12 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                         assert (not leave) //TODO exceptions
                         // printfn "Jumping to '%O', with condition %A" i (List.ofSeq t.State.Conditions |> List.map ExprFormat.exprToString)
                         interpretFrom i t.State cycleDetection
-                    | InterpreterTodoTarget.CallMethod (m, returnI, virt) ->
-                        let argCount = if m.Reference.HasThis then 1 + m.Reference.Parameters.Count else m.Reference.Parameters.Count
-                        let args = t.State.Stack |> Seq.take argCount |> Seq.rev |> IArray.ofSeq
-                        let state = { t.State with Stack = List.skip argCount t.State.Stack }
+                    | InterpreterTodoTarget.CallMethod (m, args, returnI, virt) ->
                         let savedStack = state.Stack
                         let state = { state with Stack = [] }
                         let recurse = if virt then interpretVirtualMethod else interpretMethod
                         task {
-                            let! resultState = recurse m state args dispatchFrame
+                            let! resultState = recurse m state (IArray.ofSeq args) dispatchFrame
                             let resultState = { resultState with Stack = List.append resultState.Stack savedStack }
                             match returnI with
                             | Some returnI -> return! interpretFrom returnI resultState cycleDetection

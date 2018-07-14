@@ -70,11 +70,15 @@ type ExecutionState = {
         { ExecutionState.Parent = Some x; SideEffects = list<_>.Empty; Conditions = IArray.ofSeq conditions; Assumptions = AssumptionSet.add conditions x.Assumptions; Stack = x.Stack; ChangedHeapObjects = []; Locals = x.Locals }
     member x.ChangeObject (objs: #seq<SParameter * HeapObject>) =
         { x with Assumptions = AssumptionSet.changeObj objs x.Assumptions; ChangedHeapObjects = List.append (List.ofSeq <| Seq.map fst objs) x.ChangedHeapObjects }
+    /// Takes `count` elements from the stack and returns them in natural order (reversed stack order)
+    member x.PopStack (count: int) =
+        let head = List.take count x.Stack
+        List.rev head, { x with Stack = List.skip count x.Stack }
     static member Empty = { ExecutionState.Parent = None; SideEffects = list<_>.Empty; Conditions = array<_>.Empty; Assumptions = AssumptionSet.empty; Stack = []; ChangedHeapObjects = []; Locals = dict<_, _>.Empty }
 
 type InterpreterTodoTarget =
     | CurrentMethod of Mono.Cecil.Cil.Instruction * isLeave: bool
-    | CallMethod of MethodRef * returnInstruction: option<Mono.Cecil.Cil.Instruction> * isVirtual: bool
+    | CallMethod of MethodRef * args: SExpr clist * returnInstruction: option<Mono.Cecil.Cil.Instruction> * isVirtual: bool
 
 type InterpreterTodoItem = {
     State: ExecutionState

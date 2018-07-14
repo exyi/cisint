@@ -95,6 +95,13 @@ type MethodRef(cecilReference: MethodReference) =
     member _x.Definition = cecilDefintion.Value
     member _x.Reference = cecilReference
     member _x.ReturnType = TypeRef(cecilReference.ReturnType)
+    member _x.DeclaringType = TypeRef(cecilReference.DeclaringType)
+    member x.ParameterTypes =
+        let p = cecilReference.Parameters |> Seq.map (fun p -> TypeRef p.ParameterType)
+        if cecilReference.HasThis then
+            Seq.append [ x.DeclaringType ] p |> IArray.ofSeq
+        else
+            p |> IArray.ofSeq
 
     static member AreSameMethods (a: MethodReference) (b: MethodReference) =
         if Object.ReferenceEquals(a, b) then

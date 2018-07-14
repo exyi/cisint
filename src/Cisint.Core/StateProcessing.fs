@@ -65,6 +65,14 @@ and initHeapObject (t: TypeRef) definiteType =
       Fields = Seq.map fst fieldsWithObjects |> ImmutableDictionary.CreateRange
     }, Seq.collect snd fieldsWithObjects
 
+let mutable private referenceTypeCounter = 0L
+
+let createEmptyHeapObject (t: TypeRef) (state: ExecutionState) =
+    let object, moreObj = initHeapObject t true
+    let objParam = SParameter.New t (sprintf "o%d" (Threading.Interlocked.Increment(&referenceTypeCounter)))
+    let state = state.ChangeObject (Seq.append moreObj [objParam, object])
+    objParam, state
+
 let initLocals (p: #seq<SParameter>) (state: ExecutionState) =
     let m = p
              |> Seq.map (fun p ->
@@ -189,6 +197,19 @@ let devirtualize (m: MethodRef) (args: array<SExpr>) state =
             yield restCondition, m, true
     ]
 
+let private immutableTypes = Collections.Generic.HashSet([
+    typeof<String>.FullName
+])
+let rec isTypeImmutable (m: TypeRef) =
+    if m.Reference.IsPrimitive ||
+        immutableTypes.Contains m.FullName ||
+        m.Definition.CustomAttributes |> Seq.exists (fun a -> a.AttributeType.FullName = "System.Runtime.CompilerServices.IsReadOnlyAttribute")
+        then true
+    else
+
+    let fields = m.Definition.Fields
+    (m.Definition.IsSealed || m.Definition.IsValueType) && fields |> Seq.forall (fun f -> f.IsInitOnly && isTypeImmutable (TypeRef f.FieldType))
+
 let getPureMethodSideEffectInfo (m: MethodRef) =
     let argCount = (if m.Reference.HasThis then 1 else 0) + m.Reference.Parameters.Count
     {
@@ -200,12 +221,12 @@ let getPureMethodSideEffectInfo (m: MethodRef) =
     }
 
 let getDefensiveSideEffectInfo (m: MethodRef) =
-    let argCount = (if m.Reference.HasThis then 1 else 0) + m.Reference.Parameters.Count
+    let args = m.ParameterTypes
     {
         MethodSideEffectInfo.IsGlobal = true
         IsPure = false
         ResultIsShared = true
-        ArgumentBehavior = IArray.init argCount (fun _ -> MethodArgumentEffect.Shared)
+        ArgumentBehavior = args |> IArray.map (fun p -> if isTypeImmutable p then MethodArgumentEffect.ReadOnly else MethodArgumentEffect.Shared)
         ActualResultType = None
     }
 
