@@ -51,7 +51,7 @@ type ConditionalEffect = (SExpr * SideEffect)
 
 and SideEffect =
     | MethodCall of MethodRef * resultValue: SParameter * args: SExpr array * virt: bool * globalEffect: bool * atState: AssumptionSet
-    | FieldWrite of target: SParameter option * FieldRef * value: SParameter * atState: AssumptionSet
+    | FieldWrite of target: SParameter option * FieldRef * value: SExpr * atState: AssumptionSet
     | FieldRead of target: SParameter option * FieldRef * resultValue: SParameter * atState: AssumptionSet
     | Throw of value: SParameter * atState: AssumptionSet
     | Effects of ConditionalEffect array
@@ -66,6 +66,16 @@ type ExecutionState = {
     Locals: dict<SParameter, SExpr>
     Stack: SExpr clist
 } with
+    override x.ToString () =
+        sprintf "State, %d side effects, %d objects, parent = { %O }" x.SideEffects.Count x.Assumptions.Heap.Count x.Parent
+    /// Get side effects incuding those from parent states
+    member x.AllSideEffects =
+        seq {
+            match x.Parent with
+            | Some (p) -> yield! p.AllSideEffects
+            | _ -> ()
+            yield! x.SideEffects
+        }
     member x.WithCondition (conditions: #seq<SExpr>) =
         { ExecutionState.Parent = Some x; SideEffects = list<_>.Empty; Conditions = IArray.ofSeq conditions; Assumptions = AssumptionSet.add conditions x.Assumptions; Stack = x.Stack; ChangedHeapObjects = []; Locals = x.Locals }
     member x.ChangeObject (objs: #seq<SParameter * HeapObject>) =

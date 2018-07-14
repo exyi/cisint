@@ -189,7 +189,7 @@ let ``simplifier constant collection test`` () =
     let expr2 = ExprSimplifier.createExprFromQuot <@ fun a b -> b + a + 23 + 1 @> [paramA; paramB]
 
     Assert.Contains(
-        "(1 + 23)",
+        "24",
         ExprFormat.exprToString (simplifier emptyAS expr1)
     )
     Assert.Equal(

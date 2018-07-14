@@ -1,10 +1,12 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 2013
 VisualStudioVersion = 12.0.0.0
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Cisint.Core", "Cisint.Core\Cisint.Core.fsproj", "{3B7C4922-07B2-4DB9-BDE5-E189C3D20CF6}"
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Cisint.Tests", "Cisint.Tests\Cisint.Tests.fsproj", "{BE8AED83-E76A-404D-8999-7ECA906C2DF5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cisint.DynamicEvaluator", "Cisint.DynamicEvaluator\Cisint.DynamicEvaluator.csproj", "{87F98F2E-3008-4250-B33F-946DF2D0ADCF}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -40,5 +42,17 @@ Global
 		{BE8AED83-E76A-404D-8999-7ECA906C2DF5}.Release|x64.Build.0 = Release|x64
 		{BE8AED83-E76A-404D-8999-7ECA906C2DF5}.Release|x86.ActiveCfg = Release|x86
 		{BE8AED83-E76A-404D-8999-7ECA906C2DF5}.Release|x86.Build.0 = Release|x86
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Debug|x64.Build.0 = Debug|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Debug|x86.Build.0 = Debug|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Release|x64.ActiveCfg = Release|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Release|x64.Build.0 = Release|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Release|x86.ActiveCfg = Release|Any CPU
+		{87F98F2E-3008-4250-B33F-946DF2D0ADCF}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

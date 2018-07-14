@@ -62,6 +62,12 @@ module IArray =
     for i = 0 to (count - 1) do
       b.Add(gen i)
     b.MoveToImmutable()
+
+  let forall fn (array:'a array) =
+    let mutable i = 0
+    while i < array.Length && fn array.[i] do
+      i <- i + 1
+    i = array.Length
   let ofSeq (a: #seq<'a>) = ImmutableArray.CreateRange a
 
 type ImmutableDictionary<'key, 'value> with
@@ -94,3 +100,15 @@ let waitForDebug () =
     while not(System.Diagnostics.Debugger.IsAttached) do
         System.Threading.Thread.Sleep(100)
     System.Diagnostics.Debugger.Break()
+
+let softAssert condition message =
+  if not condition then
+    if System.Environment.GetEnvironmentVariable "DEBUG" <> "" then
+      printfn "Assertion failed: %s" message
+      printfn "Do you want to [c]ontinue, [d]ebug or [t]hrow?"
+      match Console.ReadKey().KeyChar with
+      | 'c' -> ()
+      | 'd' -> waitForDebug ()
+      | _ -> failwithf "Assertion failed: %s" message
+    else
+      failwithf "Assertion failed: %s" message

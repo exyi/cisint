@@ -51,6 +51,13 @@ let getObjectsFromExpressions (atState: AssumptionSet) (expressions: #seq<SExpr>
         ) |> ignore
     Seq.iter markAsTodoExpression expressions
     resultObjects
+
+let rec private enumerateFields (t: TypeRef) =
+    seq {
+        yield! t.Definition.Fields
+        if t.Definition.BaseType <> null then
+            yield! enumerateFields (TypeRef t.Definition.BaseType)
+    }
 let mutable private valueTypeCounter = 0L
 let rec createDefaultValue (t: TypeRef) =
     if t.IsPrimitive then
@@ -67,10 +74,11 @@ let rec createDefaultValue (t: TypeRef) =
 
 and initHeapObject (t: TypeRef) definiteType =
     let fieldsWithObjects =
-        t.Definition.Fields
+        enumerateFields t
+        |> Seq.filter (fun f -> not f.IsStatic)
         |> Seq.map FieldRef
         |> Seq.map (fun f ->
-            assert(f.FieldType <> t)
+            assert(not t.Reference.IsValueType || f.FieldType <> t)
             let value, heapObjects = createDefaultValue f.FieldType
             KeyValuePair(f, value), heapObjects
         )
@@ -85,6 +93,7 @@ let mutable private referenceTypeCounter = 0L
 let createEmptyHeapObject (t: TypeRef) (state: ExecutionState) =
     let object, moreObj = initHeapObject t true
     let objParam = SParameter.New t (sprintf "o%d" (Threading.Interlocked.Increment(&referenceTypeCounter)))
+    // printfn "Adding object %s : %O to %A" objParam.Name objParam.Type (List.ofSeq (state.Assumptions.Heap.Keys |> Seq.map (fun p -> p.Name)))
     let state = state.ChangeObject (Seq.append moreObj [objParam, object])
     objParam, state
 
@@ -98,8 +107,8 @@ let initLocals (p: #seq<SParameter>) (state: ExecutionState) =
     { state with Locals = state.Locals.AddRange(Seq.map fst m) }
 
 let mergeStates a b =
-    assert (a.Parent = b.Parent)
-    assert (a.Parent.IsSome)
+    softAssert (a.Parent = b.Parent) "Merged states need to have the same parent"
+    softAssert (a.Parent.IsSome) "Merged state need to have a parent"
     let parent = a.Parent.Value
     let condition = a.Conditions |> Seq.reduce SExpr.BoolAnd
     // let conditions_b = b.Conditions
@@ -218,9 +227,12 @@ let private immutableTypes =
     ])
 let rec isTypeImmutable (m: TypeRef) =
     if m.Reference.IsPrimitive ||
-        immutableTypes.Contains m.FullName ||
-        m.Definition.CustomAttributes |> Seq.exists (fun a -> a.AttributeType.FullName = "System.Runtime.CompilerServices.IsReadOnlyAttribute")
+        immutableTypes.Contains m.FullName
         then true
+    else if not m.HasDefinition then
+        false
+    else if m.Definition.CustomAttributes |> Seq.exists (fun a -> a.AttributeType.FullName = "System.Runtime.CompilerServices.IsReadOnlyAttribute") then
+        true
     else
 
     let fields = m.Definition.Fields
@@ -347,6 +359,9 @@ let private addFieldReadSideEffect (target: SParameter option) (field: FieldRef)
         let state = { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
         addResultObject result None true state
     )
+let private addFieldWriteSideEffect (target: SParameter option) (field: FieldRef) (value: SExpr) condition state =
+    let effect = SideEffect.FieldWrite (target, field, value, state.Assumptions)
+    { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
 
 let accessField target field state =
     let result, s = target |> accessObjectProperty (fun expr objectParam ->
@@ -363,10 +378,39 @@ let accessField target field state =
     )
     result, s (SExpr.ImmConstant true) state
 
+let setField target field value state =
+    let _, s = target |> accessObjectProperty (fun expr objectParam ->
+        let hobj = objectParam |> Option.bind (state.Assumptions.Heap.TryGet)
+        match hobj with
+        | (Some hobj) when hobj.IsShared <> SExpr.ImmConstant false ->
+            // side effect...
+            let s = addFieldWriteSideEffect objectParam field value
+            expr, s
+        | (Some _) ->
+            expr, (fun condition state ->
+                let hobj = state.Assumptions.Heap.[objectParam.Value]
+                let newValue =
+                    if condition = SExpr.ImmConstant true then
+                        value
+                    else
+                        let currentValue = hobj.Fields.TryGet field |> Option.defaultWith (fun () -> SExpr.LdField field (Some (SExpr.Parameter objectParam.Value)))
+                        SExpr.Condition condition value currentValue |> ExprSimplifier.simplify state.Assumptions
+                let hobj = { hobj with Fields = hobj.Fields.SetItem(field, newValue) }
+                state.ChangeObject [ objectParam.Value, hobj ]
+            )
+        | _ ->
+            // TODO: support this - create a new object, assign it to the field and assign a field on the object
+            failwithf "Can't assign to field on non-object, expr = %A, heap objects = %A" hobj (List.ofSeq (state.Assumptions.Heap.Keys |> Seq.map (fun p -> p.Name)))
+    )
+    s (SExpr.ImmConstant true) state
+
 let accessStaticField field state =
     // TODO: immutable static fields
     let result, s = addFieldReadSideEffect None field
     SExpr.Parameter result, s (SExpr.ImmConstant true) state
+
+let setStaticField field value state =
+    addFieldWriteSideEffect None field value (SExpr.ImmConstant true) state
 
 let readLValue (expr: SLExprNode) (state: ExecutionState) =
     match expr with

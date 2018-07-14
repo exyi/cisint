@@ -8,6 +8,7 @@ open System.Linq
 open InterpreterState
 open System.Collections.Generic
 open TypesystemDefinitions
+open Cisint.DynamicEvaluator
 
 type SimplifierPattern = {
     Variables: SParameter array
@@ -183,8 +184,58 @@ let private lossLessConversions =
     new HashSet<struct (TypeRef * TypeRef)>([
         struct (CecilTools.boolType, CecilTools.intType)
     ])
+let private convertTo (t: TypeRef) isChecked =
+    let reflectionType = System.Type.GetType t.FullName
+    let invoke =
+        if reflectionType <> typeof<bool> then
+            let method = typeof<Evaluator>.GetMethod(if isChecked then "ConvertToChecked" else "ConvertTo").MakeGenericMethod([|reflectionType|])
+            fun a -> method.Invoke(null, [|a|])
+        else
+            fun (a: obj) -> System.Convert.ToBoolean a |> box
+    fun a ->
+        let a =
+            if isNull a then box 0
+            elif (true).Equals(a) then box 1
+            elif (false).Equals(a) then box 0
+            elif not (a.GetType().IsPrimitive) then box 1
+            else a
+        invoke a
+// let private castAs (t: TypeRef) throwOnFail =
+//     let reflectionType = System.Type.GetType t.FullName
+//     let method = typeof<Evaluator>.GetMethod(if checked then "Cast" else "ConvertTo").MakeGenericMethod([|reflectionType|])
+//     fun a -> method.Invoke(null, [|a|])
+let private executeConstantInstruction i resultType (args: obj array) =
+    match i with
+    | InstructionFunction.Add -> Evaluator.Add(args.[0], args.[1])
+    | InstructionFunction.And -> Evaluator.And(args.[0], args.[1])
+    | InstructionFunction.C_Eq -> Evaluator.Eq(args.[0], args.[1]) |> box
+    | InstructionFunction.C_Gt -> Evaluator.GreaterThan(args.[0], args.[1]) |> box
+    | InstructionFunction.C_Lt -> Evaluator.LessThan(args.[0], args.[1]) |> box
+    | InstructionFunction.Div -> Evaluator.Divide(args.[0], args.[1])
+    | InstructionFunction.Mul -> Evaluator.Multiply(args.[0], args.[1])
+    | InstructionFunction.Or -> Evaluator.Or(args.[0], args.[1])
+    | InstructionFunction.Rem -> Evaluator.Rem(args.[0], args.[1])
+    | InstructionFunction.Shl -> Evaluator.Shl(args.[0], args.[1])
+    | InstructionFunction.Shr -> Evaluator.Shr(args.[0], args.[1])
+    | InstructionFunction.Sub -> Evaluator.Sub(args.[0], args.[1])
+    | InstructionFunction.Xor -> Evaluator.Xor(args.[0], args.[1])
+    | InstructionFunction.Negate -> Evaluator.Negate(args.[0])
+    | InstructionFunction.BitNot -> Evaluator.BitNot(args.[0])
+    | InstructionFunction.Not -> box(not(unbox args.[0]))
+    | InstructionFunction.Box -> args.[0]
+    | InstructionFunction.Convert -> convertTo resultType false args.[0]
+    | InstructionFunction.Convert_Checked -> convertTo resultType true args.[0]
+    | InstructionFunction.Cast | InstructionFunction.IsInst when isNull args.[0] -> null
+    | _ ->
+        failwithf "Unsupported constant folding - %O %A" i args
+
 let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
     match expr.Node with
+    | SExprNode.InstructionCall (i, resultT, args) when args.arr |> IArray.forall (fun a -> match a.Node with SExprNode.Constant _ -> true | _ -> false) ->
+        // constant folding
+        let args = args.arr |> IArray.map (fun a -> match a.Node with SExprNode.Constant a -> a | _ -> failwith "wtf")
+        let result = executeConstantInstruction i resultT args
+        SExpr.New expr.ResultType (SExprNode.Constant result)
     | SExprNode.InstructionCall (InstructionFunction.Convert, convertTo, EqArray.AP [ { Node = SExprNode.InstructionCall(InstructionFunction.Convert, convertFrom, EqArray.AP [insideExpr]) } as convExpr ])
         when convertTo = insideExpr.ResultType && lossLessConversions.Contains (struct (convertTo, convertFrom)) ->
         if insideExpr.ResultType = convertTo then

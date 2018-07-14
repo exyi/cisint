@@ -69,10 +69,17 @@ type TypeRef (cecilReference: TypeReference) =
 
 
     member _x.Definition = cecilDefintion.Value
+    member _x.HasDefinition = cecilDefintion.Value |> isNull |> not
     member _x.Reference = cecilReference
     member _x.Name = cecilReference.Name
     member _x.FullName = cecilReference.FullName
     member _x.IsPrimitive = cecilReference.IsPrimitive
+    member _x.IsObjectReference = not cecilReference.IsValueType && not cecilReference.IsPointer && not cecilReference.IsByReference
+    member x.BaseTypeChain =
+        if isNull cecilDefintion.Value || isNull cecilDefintion.Value.BaseType then
+            [x]
+        else
+            x :: (TypeRef cecilDefintion.Value.BaseType).BaseTypeChain
 
     override x.Equals(o) =
         match o with

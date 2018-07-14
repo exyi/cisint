@@ -81,6 +81,8 @@ and SExpr = {
     SimplificationVersion: AssumptionSetVersion
 }
 with
+     override x.ToString() =
+        sprintf "expression %s : %O" (x.Node.GetType().Name) x.ResultType
      static member New resultType node =
         let struct (cRank, lRank) = SExpr.CountExprNodes node
         { SExpr.Node = node; ResultType = resultType; SimplificationVersion = AssumptionSetVersion.None; NodeLeavesRank = lRank; NodeCountRank = cRank }
@@ -90,6 +92,9 @@ with
      static member InstructionCall func resultType (args: #seq<_>) =
         let node = InstructionCall (func, resultType, ImmutableArray.CreateRange(args) |> EqArray.New)
         SExpr.New resultType node
+     static member Cast func rtype node =
+        if node.ResultType = rtype then node
+        else SExpr.InstructionCall func rtype [ node ]
      static member Parameter p =
         let node = LValue (Parameter p)
         SExpr.New p.Type node

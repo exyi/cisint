@@ -20,6 +20,7 @@ open System.Collections.Generic
 open StateProcessing
 open System.Collections.Generic
 open System.Collections.Generic
+open System.IO
 
 type InterpreterFrameInfo = {
     FrameToken: obj
@@ -52,7 +53,7 @@ let stackLoadConvert (expr: SExpr) =
     let t = expr.ResultType
     if not t.IsPrimitive then
         expr
-    elif t.FullName = typeof<int>.FullName || t.FullName = typeof<int64>.FullName || t.FullName = typeof<float>.FullName then
+    elif t.FullName = typeof<int>.FullName || t.FullName = typeof<int64>.FullName || t.FullName = typeof<float>.FullName || t.FullName = typeof<System.UIntPtr>.FullName || t.FullName = typeof<System.IntPtr>.FullName then
         expr
     elif t.FullName = typeof<uint64>.FullName then
         SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<int64>) [ expr ]
@@ -67,11 +68,15 @@ let stackLoadConvert (expr: SExpr) =
             t.FullName = typeof<UInt32>.FullName then
         SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<int32>) [ expr ]
     else
-        failwithf "unsupported stack load conversion from '%O'." expr.ResultType
+        tooComplicated <| sprintf "unsupported stack load conversion from '%O'." expr.ResultType
 
 let stackArithmeticCoerce a b =
     if a.ResultType = b.ResultType then
         (a, b)
+    elif a.ResultType.IsObjectReference && b.ResultType.IsObjectReference then
+        let (cA, cB) = List.rev a.ResultType.BaseTypeChain, List.rev b.ResultType.BaseTypeChain
+        let commonCast, _ = Seq.init (min cA.Length cB.Length) (fun i -> (cA.[i], cB.[i])) |> Seq.findBack (fun (a, b) -> a = b)
+        (SExpr.Cast InstructionFunction.Cast commonCast a, SExpr.Cast InstructionFunction.Cast commonCast b)
     else
         waitForDebug ()
         failwithf "coertion %O <-> %O not supported (expressions %s, %s)" a.ResultType b.ResultType (ExprFormat.exprToString a) (ExprFormat.exprToString b)
@@ -83,6 +88,8 @@ let stackConvertToUnsigned (a: SExpr) =
         SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<uint64>) [a]
     elif a.ResultType.FullName = typeof<float>.FullName then
         a // TODO: float.NaN glitches :(
+    elif a.Node = SExprNode.Constant null then
+        SExpr.ImmConstant 0u
     else
         failwithf "Coertion to unsigned '%O' not .supported" a.ResultType
 
@@ -174,9 +181,21 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
     elif op = OpCodes.Or then procBasicArit InstructionFunction.Or id
     elif op = OpCodes.Xor then procBasicArit InstructionFunction.Xor id
 
+    elif op = OpCodes.Shl then proc2stack (fun a b -> SExpr.InstructionCall InstructionFunction.Shl a.ResultType [a; b])
+    elif op = OpCodes.Shr then proc2stack (fun a b -> SExpr.InstructionCall InstructionFunction.Shr a.ResultType [a; b])
+    elif op = OpCodes.Shr_Un then proc2stack (fun a b -> let a = stackConvertToUnsigned a in SExpr.InstructionCall InstructionFunction.Shr a.ResultType [a; b])
+
     elif op = OpCodes.Ceq then procArit (fun a b -> SExpr.InstructionCall InstructionFunction.Convert CecilTools.intType [SExpr.InstructionCall InstructionFunction.C_Eq CecilTools.boolType [a;b]])
     elif op = OpCodes.Cgt then procArit (fun a b -> SExpr.InstructionCall InstructionFunction.Convert CecilTools.intType [SExpr.InstructionCall InstructionFunction.C_Gt CecilTools.boolType [a;b]])
-    elif op = OpCodes.Cgt_Un then procArit (fun a b -> SExpr.InstructionCall InstructionFunction.Convert CecilTools.intType [SExpr.InstructionCall InstructionFunction.C_Gt CecilTools.boolType [stackConvertToUnsigned a;stackConvertToUnsigned b]])
+    elif op = OpCodes.Cgt_Un then
+        procArit (fun a b ->
+            SExpr.InstructionCall InstructionFunction.Convert CecilTools.intType [
+               (if a.ResultType.IsObjectReference && b.Node = SExprNode.Constant null then
+                    // Special case for cgt.un for a != null, see note 2 on "Table III.4: Binary Comparison or Branch Operations"
+                    SExpr.InstructionCall InstructionFunction.C_Eq CecilTools.boolType [a; b] |> SExpr.BoolNot
+                else SExpr.InstructionCall InstructionFunction.C_Gt CecilTools.boolType [stackConvertToUnsigned a;stackConvertToUnsigned b])
+            ]
+        )
     elif op = OpCodes.Clt then procArit (fun a b -> SExpr.InstructionCall InstructionFunction.Convert CecilTools.intType [SExpr.InstructionCall InstructionFunction.C_Lt CecilTools.boolType [a;b]])
     elif op = OpCodes.Clt_Un then procArit (fun a b -> SExpr.InstructionCall InstructionFunction.Convert CecilTools.intType [SExpr.InstructionCall InstructionFunction.C_Lt CecilTools.boolType [stackConvertToUnsigned a;stackConvertToUnsigned b]])
 
@@ -345,11 +364,26 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
         let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
         pushToStack (SExpr.New field.FieldType (SExprNode.Reference (SLExprNode.LdField (field, None))))
 
+    elif op = OpCodes.Stfld then
+        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        let [target; value], state = state.PopStack 2
+        let state = setField target field value state
+        InterpretationResult.NewState state
+
+    elif op = OpCodes.Stsfld then
+        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        let [value], state = state.PopStack 1
+        let state = setStaticField field value state
+        InterpretationResult.NewState state
+
+
     else tooComplicated <| sprintf "unsupported instruction %O" instr
 
 let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args: SExpr array) (dispatchFrame: InterpreterFrameDispatcher) =
     let method = methodref.Definition
     assertOrComplicated (method.Body <> null) "method does not have body"
+    assertOrComplicated (not method.ContainsGenericParameter) "method contains generic parameters"
+    assertOrComplicated (method.Body.ExceptionHandlers.Count = 0) "there are exception handlers" // TODO
     assert (method.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id)
 
     let frameInfo = { InterpreterFrameInfo.Method = methodref; Args = args; FrameToken = obj(); CurrentInstruction = null; BranchingFactor = 1 }
@@ -357,6 +391,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
     // printfn "Interpreting Core %O" methodref
     // method.Body.Instructions |> Seq.iter (printfn "\t%O")
 
+    IO.Directory.CreateDirectory "dasm" |> ignore
     IO.File.WriteAllLines("dasm/" + string methodref + ".il", method.Body.Instructions |> Seq.map (sprintf "\t%O"))
 
     let locals = method.Body.Variables
@@ -390,13 +425,20 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
         let blockResult = interpretBlock noPrefixes i state
         match blockResult with
         | InterpretationResult.NewState _ -> assert false; failwith "wtf"
-        | InterpretationResult.Return state -> Task.FromResult state
+        | InterpretationResult.Return newState ->
+            softAssert (LanguagePrimitives.PhysicalEquality newState.Parent state.Parent) "Can't change parent by interpreting"
+            Task.FromResult newState
         | InterpretationResult.Branching todoItems ->
             let cycleDetection =
                 if todoItems.Length > 1 then
                     assertOrComplicated (not <| List.contains i.Offset cycleDetection) (sprintf "Method contains unbounded cycle in block %O" i)
                     i.Offset :: cycleDetection
                 else cycleDetection
+            if todoItems.Length = 1 then
+                softAssert (todoItems.Head.State.Parent = state.Parent) "Can't fork state to only one branch"
+            else
+                softAssert (todoItems |> List.forall (fun t -> t.State.Parent.IsSome)) "All state forks need to have a parent"
+                softAssert (todoItems |> List.forall (fun t -> t.State.Parent.Value.Parent = state.Parent)) "All state forks need to be granchild of current parent"
             let todoFunctions =
                 todoItems
                 |> Seq.map (fun t () ->
@@ -406,11 +448,13 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                         // printfn "Jumping to '%O', with condition %A" i (List.ofSeq t.State.Conditions |> List.map ExprFormat.exprToString)
                         interpretFrom i t.State cycleDetection
                     | InterpreterTodoTarget.CallMethod (m, args, returnI, virt) ->
+                        let state = t.State
                         let savedStack = state.Stack
                         let state = { state with Stack = [] }
                         let recurse = if virt then interpretVirtualMethod else interpretMethod
                         task {
                             let! resultState = recurse m state (IArray.ofSeq args) dispatchFrame
+                            softAssert (LanguagePrimitives.PhysicalEquality resultState.Parent state.Parent) "Can't change parent by interpreting"
                             let resultState = { resultState with Stack = List.append resultState.Stack savedStack }
                             match returnI with
                             | Some returnI -> return! interpretFrom returnI resultState cycleDetection
@@ -440,21 +484,20 @@ and private getPreinterpretedMethod (method: MethodRef) =
         Task.FromResult({ ExecutionCacheEntry.ArgParameters = array<_>.Empty; DefiniteStates = array<_>.Empty })
 
 and interpretMethod (method: MethodRef) (state: ExecutionState) (args: seq<SExpr>) (dispatcher: InterpreterFrameDispatcher) =
-    assert (state.Stack.IsEmpty)
-    // waitForDebug()
+    softAssert (state.Stack.IsEmpty) "Stack needs to be empty"
+    let resultAsserts result =
+        softAssert (System.Object.ReferenceEquals(result.Parent, state.Parent)) "State parent needs to be the same"
+        if method.ReturnType.FullName = "System.Void" then
+            softAssert (result.Stack.Length = 0) <| sprintf "%O - void method returns %d vals." method result.Stack.Length
+        else
+            softAssert (result.Stack.Length = 1) <| sprintf "%O - method returns %d vals." method result.Stack.Length
     task {
         // let! preinterpreted = getPreinterpretedMethod method
 
         try
             // printfn "Interpreting %O" method
             let! result = interpretMethodCore method state (IArray.ofSeq args) dispatcher
-            assert (System.Object.ReferenceEquals(result.Parent, state.Parent))
-            if method.ReturnType.FullName = "System.Void" then
-                if result.Stack.Length <> 0 then
-                    failwithf "%O - void method returns %d vals." method result.Stack.Length
-            else
-                if result.Stack.Length <> 1 then
-                    failwithf "%O - method returns %d vals." method result.Stack.Length
+            resultAsserts result
             return result
         with
           | FunctionTooComplicatedException msg ->
@@ -463,12 +506,7 @@ and interpretMethod (method: MethodRef) (state: ExecutionState) (args: seq<SExpr
             printfn "Function %O is too complicated - %s" method msg
 
             let result = addCallSideEffect method (getMethodSideEffectInfo method) args (*virt*)false state
-            if method.ReturnType.FullName = "System.Void" then
-                if result.Stack.Length <> 0 then
-                    failwithf "%O - void method returns %d vals." method result.Stack.Length
-            else
-                if result.Stack.Length <> 1 then
-                    failwithf "%O - method returns %d vals." method result.Stack.Length
+            resultAsserts result
             return result
           | otherException ->
             raise (new Exception(sprintf "Error occured during execution of %O" method, otherException))
@@ -478,17 +516,23 @@ and interpretMethod (method: MethodRef) (state: ExecutionState) (args: seq<SExpr
     }
 and interpretVirtualMethod method state args dispatcher =
     let devirtTargets = devirtualize method args state
+    let states = ResizeArray()
     let jobs =
         devirtTargets
-        |> Seq.map (fun (condition, method, isVirtual) ->
+        |> List.map (fun (condition, method, isVirtual) ->
             let forkedState = if condition = SExpr.ImmConstant true then state
                               else state.WithCondition [condition]
+            states.Add forkedState
             if isVirtual then
                 // not devirtualizable -> side effect
                 fun () -> addCallSideEffect method (getMethodSideEffectInfo method) args (*virt*)true forkedState |> Task.FromResult
             else
                 fun () -> interpretMethod method forkedState args dispatcher
         )
+    if states.Count = 1 then softAssert (LanguagePrimitives.PhysicalEquality states.[0].Parent state.Parent) "One forked state can't have a different parent"
+    else
+        softAssert (states |> Seq.forall (fun s -> s.Parent.IsSome)) "Forked states must have a parent"
+        softAssert (states |> Seq.forall (fun s -> LanguagePrimitives.PhysicalEquality s.Parent.Value.Parent state.Parent)) "Forked states must be grandchildren of current parent"
     runAndMerge jobs (dispatcher [ { InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = devirtTargets.Length; CurrentInstruction = null } ])
 
 

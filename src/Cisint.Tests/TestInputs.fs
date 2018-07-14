@@ -1,5 +1,14 @@
 namespace Cisint.Tests.TestInputs
 
+type TestRecord = {
+    SomeProp: int
+    AnotherProp: string Option
+} with
+    static member Create count =
+        { TestRecord.SomeProp = count; AnotherProp = None }
+    member x.WithStr t =
+        { x with AnotherProp = Some t }
+
 type Something = class
     static member A a b = a ^^^ b
     static member WithCondition a b = if a + 1 > b then a + 1 else b
@@ -24,7 +33,14 @@ type Something = class
         else
             Something.SideEffect1 (x * 2)
 
+    static member CreateSomeObject x y =
+        (TestRecord.Create x).WithStr y
+
+    static member CreateAndUseTheObject a =
+        (Something.CreateSomeObject a (a.ToString())).GetHashCode()
+
 end
+
 
 type TestI =
     abstract member M: unit -> int

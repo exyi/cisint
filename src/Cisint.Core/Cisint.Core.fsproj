@@ -24,4 +24,7 @@
     <PackageReference Include="FSharp.Core" Version="4.3.4" />
     <PackageReference Include="System.ValueTuple" Version="4.5.0" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Cisint.DynamicEvaluator\Cisint.DynamicEvaluator.csproj" />
+  </ItemGroup>
 </Project>

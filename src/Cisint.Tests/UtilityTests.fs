@@ -22,3 +22,11 @@ let ``Mono.Cecil inheritance`` () =
                 "T2 method: System.Int32 Cisint.Tests.TestInputs.TestC2::Cisint-Tests-TestInputs-TestI-M()"
             ]
     )
+
+[<Fact>]
+let ``array forall`` () =
+    let a1 = [0; 2; 4; 6] |> IArray.ofSeq
+    Assert.True(IArray.forall (fun a -> a % 2 = 0) a1)
+    Assert.False(IArray.forall (fun a -> a < 0) a1)
+    Assert.False(IArray.forall (fun a -> a > 0) a1)
+    Assert.False(IArray.forall (fun a -> a < 6) a1)

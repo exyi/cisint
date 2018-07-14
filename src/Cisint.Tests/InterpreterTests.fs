@@ -16,6 +16,18 @@ let testMethod =
 let state = ExecutionState.Empty
 let dispatcher = Interpreter.createSynchronousDispatcher (fun x -> ())
 
+printfn "Current directory is %s" (IO.Directory.GetCurrentDirectory())
+
+let interpretMethod method name state args =
+    task {
+        let! result = Interpreter.interpretMethod (testMethod method) state args dispatcher
+        let stateDump = ExprFormat.dumpState result
+        IO.Directory.CreateDirectory "state_dump" |> ignore
+        IO.File.WriteAllText("state_dump/" + method,
+            sprintf "Interpreted method %s (%s) - %s:\n\n%s"  method (String.Join(", ", Seq.map ExprFormat.exprToString args)) name stateDump)
+        return result, stateDump
+    }
+
 [<Fact>]
 let ``Simple XOR method`` () = task {
     let paramA = SParameter.New (CecilTools.intType) "a"
@@ -50,14 +62,30 @@ let ``Simple condition`` () = task {
 let ``Simple side effects`` () = task {
     let paramX = SParameter.New (CecilTools.intType) "x"
     let paramY = SParameter.New (CecilTools.convertType typeof<string>) "y"
-    let! result1 = Interpreter.interpretMethod (testMethod "WithSideEffects") state [ SExpr.Parameter paramX; SExpr.Parameter paramY ] dispatcher
+    let! result1, formatted = interpretMethod "WithSideEffects" "general" state [ SExpr.Parameter paramX; SExpr.Parameter paramY ]
     // let! result2 = Interpreter.interpretMethod method state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
 
-    let formatted = result1 |> ExprFormat.dumpState
-    printfn "%s" formatted
     Assert.Contains("Cisint.Tests.TestInputs.Something::SideEffect2", formatted)
     Assert.Contains("Cisint.Tests.TestInputs.Something::SideEffect1", formatted)
     Assert.Contains("(x * 2)", formatted)
     Assert.Contains("if ", formatted)
     Assert.Equal(1, result1.Stack.Length)
+}
+
+[<Fact>]
+let ``Simple heap operations - CreateSomeObject`` () = task {
+    let paramX = SParameter.New (CecilTools.intType) "x"
+    let paramY = SParameter.New (CecilTools.convertType typeof<string>) "y"
+    let! result1, formatted = interpretMethod "CreateSomeObject" "general" state [ SExpr.Parameter paramX; SExpr.Parameter paramY ]
+    // let! result2 = Interpreter.interpretMethod method state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
+    ()
+}
+
+[<Fact>]
+let ``Simple heap operations - CreateAndUseTheObject`` () = task {
+    // waitForDebug()
+    let paramX = SParameter.New (CecilTools.intType) "x"
+    let! result1, formatted = interpretMethod "CreateAndUseTheObject" "general" state [ SExpr.Parameter paramX ]
+    // let! result2 = Interpreter.interpretMethod method state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
+    ()
 }
