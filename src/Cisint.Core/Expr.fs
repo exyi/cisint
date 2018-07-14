@@ -104,6 +104,9 @@ with
      static member LdField field target =
         let node = LValue (LdField (field, target))
         SExpr.New (TypeRef field.Reference.FieldType) node
+     static member LdElement target index =
+        let node = LValue (LdElement (target, index))
+        SExpr.New (TypeRef (target.ResultType.Reference.GetElementType())) node
      static member Condition cond ifTrue ifFalse =
         assert (ifTrue.ResultType = ifFalse.ResultType)
         assert (cond.ResultType.Reference.MetadataType = Mono.Cecil.MetadataType.Boolean)
@@ -155,6 +158,8 @@ with
             if node.ResultType.Reference.MetadataType = Mono.Cecil.MetadataType.Boolean then node
             else SExpr.InstructionCall InstructionFunction.Convert CecilTools.boolType [ node ]
         SExpr.InstructionCall InstructionFunction.Not CecilTools.boolType [ node ]
+     static member BoolAnd a b = SExpr.InstructionCall InstructionFunction.And CecilTools.boolType [a; b]
+     static member BoolOr a b = SExpr.InstructionCall InstructionFunction.Or CecilTools.boolType [a; b]
     // static member AreSameType a b =
     //     match (a, b) with
     //     | (Condition (_, _, _), Condition (_, _, _)) -> true

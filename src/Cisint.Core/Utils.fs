@@ -64,6 +64,12 @@ module IArray =
     b.MoveToImmutable()
   let ofSeq (a: #seq<'a>) = ImmutableArray.CreateRange a
 
+type ImmutableDictionary<'key, 'value> with
+  member x.TryGet key =
+    match x.TryGetValue key with
+    | (true, a) -> Some a
+    | (false, _) -> None
+
 // module SeqPlus =
 //   let inline exactlyOneDistinct (arr: 'a seq) =
 //     if arr.Length = 0 then None

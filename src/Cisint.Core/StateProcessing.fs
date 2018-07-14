@@ -7,18 +7,33 @@ open System.Collections.Generic
 open System.Collections.Immutable
 open System.Diagnostics.Contracts
 
-let readLValue (expr: SLExprNode) (state: ExecutionState) =
-    match expr with
-    | SLExprNode.Parameter p ->
-        if state.Locals.ContainsKey p then
-            state.Locals.[p]
-        else
-            failwithf "Can't read LValue"
-    | _ -> failwithf "Can't read LValue, expression of type %O" (expr.GetType())
-let dereference (expr: SExpr) (state: ExecutionState) =
+let rec private accessObjectProperty (fn: SExpr -> SParameter option -> SExpr * (SExpr -> ExecutionState -> ExecutionState)) expr =
+    let procLV lv =
+        match lv with
+        | SLExprNode.Parameter p ->
+            fn expr (Some p)
+        | SLExprNode.LdField (_field, None) ->
+            fn expr None
+        | SLExprNode.LdField (field, (Some target)) ->
+            accessObjectProperty (fun e -> fn (SExpr.LdField field (Some e))) target
+        | SLExprNode.LdElement (target, index) ->
+            accessObjectProperty (fun e -> fn (SExpr.LdElement e index)) target
+        | SLExprNode.Dereference d ->
+            accessObjectProperty fn d
     match expr.Node with
-    | SExprNode.Reference lv -> readLValue lv state
-    | _ -> failwithf "Can't deref"
+    | SExprNode.LValue lv -> procLV lv
+    | SExprNode.Reference lv -> procLV lv
+    | SExprNode.Condition (cond, ifTrue, ifFalse) ->
+        let ifTrue, s1 = accessObjectProperty fn ifTrue
+        let ifFalse, s2 = accessObjectProperty fn ifFalse
+        SExpr.Condition cond ifTrue ifFalse, (fun condition -> s1 (SExpr.BoolAnd condition cond) >> s2 (SExpr.BoolAnd condition cond |> SExpr.BoolNot))
+    | SExprNode.InstructionCall (InstructionFunction.Box | InstructionFunction.Cast | InstructionFunction.IsInst as instruction, resultType, EqArray.AP [ arg ]) ->
+        // cast instructions
+        accessObjectProperty (fun e -> fn (SExpr.InstructionCall instruction resultType [ e ])) arg
+    | SExprNode.PureCall _ ->
+        fn expr None
+    | e -> failwithf "Can't load field from %A" e
+
 
 let getObjectsFromExpressions (atState: AssumptionSet) (expressions: #seq<SExpr>) =
     let resultObjects = Collections.Generic.List()
@@ -86,7 +101,7 @@ let mergeStates a b =
     assert (a.Parent = b.Parent)
     assert (a.Parent.IsSome)
     let parent = a.Parent.Value
-    let condition = a.Conditions |> Seq.reduce (fun a b -> SExpr.InstructionCall InstructionFunction.And CecilTools.boolType [a; b])
+    let condition = a.Conditions |> Seq.reduce SExpr.BoolAnd
     // let conditions_b = b.Conditions
     let changedObjects =
         Seq.append a.ChangedHeapObjects b.ChangedHeapObjects |> Seq.distinct |> Seq.map (fun op ->
@@ -187,7 +202,7 @@ let devirtualize (m: MethodRef) (args: array<SExpr>) state =
     let restCondition =
         targetTypes
         |> Seq.map fst
-        |> Seq.fold (fun a b -> SExpr.InstructionCall InstructionFunction.Or CecilTools.boolType [a; b]) (SExpr.ImmConstant false)
+        |> Seq.fold SExpr.BoolOr (SExpr.ImmConstant false)
         |> SExpr.BoolNot
         |> ExprSimplifier.simplify state.Assumptions
     [
@@ -197,9 +212,10 @@ let devirtualize (m: MethodRef) (args: array<SExpr>) state =
             yield restCondition, m, true
     ]
 
-let private immutableTypes = Collections.Generic.HashSet([
-    typeof<String>.FullName
-])
+let private immutableTypes =
+    Collections.Generic.HashSet([
+        typeof<String>.FullName
+    ])
 let rec isTypeImmutable (m: TypeRef) =
     if m.Reference.IsPrimitive ||
         immutableTypes.Contains m.FullName ||
@@ -246,7 +262,7 @@ let rec markObjectShared (o: SParameter) (condition: SExpr) state =
         state
     else
 
-    let shared = SExpr.InstructionCall InstructionFunction.Or CecilTools.boolType [ hobj.IsShared; condition ] |> ExprSimplifier.simplify state.Assumptions
+    let shared = SExpr.BoolOr hobj.IsShared condition |> ExprSimplifier.simplify state.Assumptions
     if shared = hobj.IsShared then
         state
     else
@@ -298,6 +314,15 @@ let markSideEffectArguments (args: SExpr array) (argInfo: MethodArgumentEffect a
 let mutable private sideEffectCounter = 0L
 let private sideEffectResult t =
     SParameter.New t (sprintf "se%d" (Threading.Interlocked.Increment(&sideEffectCounter)))
+let private addResultObject (result: SParameter) heapType (isShared: bool) (state: ExecutionState) =
+    if result.Type.FullName = "System.Void" then state
+    else
+        state.ChangeObject [
+            result, { HeapObject.Type = heapType |> Option.defaultValue result.Type
+                      TypeIsDefinite = heapType.IsSome || result.Type.Definition.IsSealed
+                      Fields = dict<_, _>.Empty
+                      IsShared = SExpr.ImmConstant isShared } ]
+
 let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt state =
     let args = IArray.ofSeq args
     let hasNonvirtualArgs = virt || isCallNonVirtual m args state
@@ -311,9 +336,51 @@ let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt st
     let state =  markSideEffectArguments args seInfo.ArgumentBehavior state
     let effect = SideEffect.MethodCall (m, result, args, virt, seInfo.IsGlobal, state.Assumptions)
     let state = { state with SideEffects = state.SideEffects.Add(SExpr.ImmConstant true, effect) }
-    let state =
-        if m.ReturnType.FullName = "System.Void" then state
+
+    let state = addResultObject result seInfo.ActualResultType seInfo.ResultIsShared state
+    if result.Type.FullName = "System.Void" then state
+    else { state with Stack = SExpr.Parameter result :: state.Stack }
+let private addFieldReadSideEffect (target: SParameter option) (field: FieldRef) =
+    let result = sideEffectResult (TypeRef field.Reference.FieldType)
+    result, (fun condition state ->
+        let effect = SideEffect.FieldRead (target, field, result, state.Assumptions)
+        let state = { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
+        addResultObject result None true state
+    )
+
+let accessField target field state =
+    let result, s = target |> accessObjectProperty (fun expr objectParam ->
+        let hobj = objectParam |> Option.bind (state.Assumptions.Heap.TryGet)
+        match hobj with
+        | (Some hobj) when hobj.IsShared <> SExpr.ImmConstant false ->
+            // side effect...
+            let result, s = addFieldReadSideEffect objectParam field
+            SExpr.Parameter result, s
+        | (Some hobj) when hobj.Fields.ContainsKey field ->
+            hobj.Fields.[field], (fun _ a -> a)
+        | _ ->
+            SExpr.LdField field (Some expr), (fun _ a -> a)
+    )
+    result, s (SExpr.ImmConstant true) state
+
+let accessStaticField field state =
+    // TODO: immutable static fields
+    let result, s = addFieldReadSideEffect None field
+    SExpr.Parameter result, s (SExpr.ImmConstant true) state
+
+let readLValue (expr: SLExprNode) (state: ExecutionState) =
+    match expr with
+    | SLExprNode.Parameter p ->
+        if state.Locals.ContainsKey p then
+            state.Locals.[p], state
         else
-            let state = state.ChangeObject [ result, { HeapObject.Type = seInfo.ActualResultType |> Option.defaultValue m.ReturnType; TypeIsDefinite = seInfo.ActualResultType.IsSome || m.ReturnType.Definition.IsSealed; Fields = dict<_, _>.Empty; IsShared = SExpr.ImmConstant seInfo.ResultIsShared } ]
-            { state with Stack = SExpr.Parameter result :: state.Stack }
-    state
+            failwithf "Can't read LValue parameter %A" p
+    | SLExprNode.LdField (field, Some target) ->
+        accessField target field state
+    | SLExprNode.LdField (field, None) ->
+        accessStaticField field state
+    | _ -> failwithf "Can't read LValue, expression of type %O" (expr.GetType())
+let dereference (expr: SExpr) (state: ExecutionState) =
+    match expr.Node with
+    | SExprNode.Reference lv -> readLValue lv state
+    | _ -> failwithf "Can't deref"

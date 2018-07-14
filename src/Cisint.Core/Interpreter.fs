@@ -153,11 +153,10 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
         | _ -> failwithf "Can't pop a value from stack at %O" instr
 
     let loadIndirect expectedType =
-        proc1stack (fun addr ->
-            let result = dereference addr state
-            if expectedType <> Some result.ResultType && expectedType <> None then failwithf "Can't load dereference to %O, %O was expected" result.ResultType expectedType
-            stackLoadConvert result
-        )
+        let [addr], state = state.PopStack 1
+        let result, state = dereference addr state
+        if expectedType <> Some result.ResultType && expectedType <> None then failwithf "Can't load dereference to %O, %O was expected" result.ResultType expectedType
+        InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
 
     let op = instr.OpCode
     // arithmetic instructions:
@@ -327,6 +326,25 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
         InterpretationResult.Branching [
             { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef constructor, SExpr.Parameter object :: args, returnI, false) }
         ]
+    elif op = OpCodes.Ldfld then
+        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        let [target], state = state.PopStack 1
+        let result, state = accessField target field state
+        InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
+
+    elif op = OpCodes.Ldsfld then
+        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        let result, state = accessStaticField field state
+        InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
+
+    elif op = OpCodes.Ldflda then
+        // the address is simply loaded as an expression. The magic is handled when it's dereferenced
+        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        proc1stack (fun e -> SExpr.New field.FieldType (SExprNode.Reference (SLExprNode.LdField (field, Some e))))
+    elif op = OpCodes.Ldsflda then
+        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        pushToStack (SExpr.New field.FieldType (SExprNode.Reference (SLExprNode.LdField (field, None))))
+
     else tooComplicated <| sprintf "unsupported instruction %O" instr
 
 let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args: SExpr array) (dispatchFrame: InterpreterFrameDispatcher) =
@@ -336,8 +354,10 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
 
     let frameInfo = { InterpreterFrameInfo.Method = methodref; Args = args; FrameToken = obj(); CurrentInstruction = null; BranchingFactor = 1 }
 
-    printfn "Interpreting Core %O" methodref
-    method.Body.Instructions |> Seq.iter (printfn "\t%O")
+    // printfn "Interpreting Core %O" methodref
+    // method.Body.Instructions |> Seq.iter (printfn "\t%O")
+
+    IO.File.WriteAllLines("dasm/" + string methodref + ".il", method.Body.Instructions |> Seq.map (sprintf "\t%O"))
 
     let locals = method.Body.Variables
                  |> Seq.map (fun var -> SParameter.New (TypeRef var.VariableType) (sprintf "%s_loc%d" method.Name var.Index))

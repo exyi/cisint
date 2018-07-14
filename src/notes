@@ -1,0 +1,143 @@
+Ahoj,
+
+jako zápočťák bych chtěl napsat symbolický interpretr na .NETový
+bytecode.
+
+Mělo by to umět "pochopit" jednoduché programy a zjistit co přesně se
+stane když se takový program (funkce) spustí - tzn řekne seznam
+vedlejších efektů a co vrátí jako výsledek. Motivací pro tento projekt
+je třeba odoptimalizování extensibility pointů, které mají nějakým
+způsobem silný kontrakt a je drahé ho dodržovat. Už třeba jen ta
+informace že kód nemá žádné vedlejší efekty může být velmi užitečná.
+Jednoduchým příkladem může být třeba serverový html helper, třeba:
+
+Button Text="{text je nastavený na nějaký dynamický expression}"
+class="..." title="..." ...spousta dalších parametrů
+
+Je to jenom tenký wrapper na <button ...>, ale je potřeba pro každý
+request vyrobit objekt, nastavit mu parametry, zavolat na něm nějaké
+virtuální metody aby se pokaždé zavolaly ty samé funkce zápisu do
+výstupního html, jenom s jiným parametrem pro ten Text.
+
+
+Samotný interpretr by měl fungovat jako jednoduchá symbolic execution
+pro děti ze školky - na zásobníku budou místo hodnot proměnných nějaké
+symbolické výrazy. Když provedu operaci sečtení, tak se vyrobí sčítací
+výraz a ten se prohlásí za výsledek, a tak dále... dotnetový bytecode
+navíc nepoužívá plochou paměť ale má všechno rozdělené nějak do
+objektů, takže když se něco uloží do paměti, tak se do toho pole v
+objektu dá taky symbolický výraz. Pak je potřeba nějaké zjednodušovátko
+výrazů; klasicky se na to používájí SMT solvery, ale já jsem přesvědčen
+o tom, že na moje použití mi bude stačit převádění výrazů do nějaké
+kanonické formy (prohazování podle komutativity a asociativity),
+požírání konstant a možná pár dalších triků podle potřeby :)
+
+
+
+Důležitý je model práce s pamětí. Jak jsem říkal, nemám lineární paměť,
+ale za to mám poměrně složitý objektový sytém a je tam stejně spousta
+problémů s tím, že si vyrobím mutable objekt, pak ho pošlu do nějaké
+funkce kterou nechápu (tzn je to side-effect), a pak libovolné čtení i
+zápis jsou taky side-effect, protože nevím co ošklivého s tím ta funkce
+mohla provést (třeba poslat na jiný thread a tam pořád přičítá
+jedničku, kdo ví). Zatím to mám vymyšlené takto:
+
+Při alokaci objektu (na to je instrukce) si vyrobím objekt
+reprezentující objekt, napíšu s k němu typ a pak spustím konstruktor
+jako běžnou funkci (ta pravděpodobně jen nastaví fieldy v objektu)
+
+Při zápisu jen nastavím hodnotu daného fieldu na nějaký výraz.
+
+Při čtení se podívám co je tam za výraz a ten použiju. Tady je
+důležité, že si ho zkopíruju a nepoužiju výraz typu "objekt.field",
+protože se může za chvilku změnit na něco jiného. Jenom tu hrozí, že mi
+bude exponenciálně množit velikost těch výrazů, a o tom za chvilku.
+
+Pokud bych četl hodnotu z fieldu, kde nevím co v něm je (protože jsem
+ten objekt získal z nějakého symblického parametru), tak použiju ten
+výraz typu "objekt.field", ale budu ho brát jako obecný symbolický
+parametr a speciálně ho nikdy nechci zjednodušit na hodnotu toho
+objektu, pokud se tam někdy objeví.
+
+
+
+Pak je důležitý model práce se side-effecty a dalšími funkcemi které
+můj symbolický interpretr nepochopí. Protože mi mimo jiné jde o to
+nějak optimalizovat kód, tak si nechci dovolit moc chyb (narozdíl od
+všech těch testovacích věcí) a v některých případech se možná chci
+chovat příliš defenzivně.
+
+* Volání funkce o které nevím vůbec nic je side-effect, můžu ho
+zapisovat třeba takto:
+
+d = divna_funkce(a, b + c)
+
+a, b, c jsou parametry, d je výsledek této funkce. Když `a` nebo `d`
+bude měnitelný objekt, pak si ho označím jako "shared" a libovolné
+čtení nebo zápis do něj bude taky side-effect, protože ta
+"divna_funkce" dostala právo v něm kdykoliv v budoucnu cokoliv měnit a
+nebo číst. Pokud by dostala jenom kopii struktury, nebo by objekt byl
+immutable, pak to není potřeba.
+Ještě je dobré zmínit, že volání libovolné virtuální funkce kde si
+nejsem přesně jistý typem objektu na kterém se to volá je vždy side-
+effect. Bohužel je i docela běžné, že i gettery mají side-effecty,
+takže ani to nejde prohlásit za bezpečné :(
+
+* Pak můžou existovat funkce, které budou mít jenom lokální efekt na
+nějaké parametry a budou slibovat, že na nějaké parametry a na globální
+stav nesáhnou. Ty budou vedeny standardně jako side-effecty, jenom je
+bude možné smazat pokud se třeba nikde nepoužije ten změněný objekt.
+Navíc nebude nutné zachovávat pořadí spuštění a nebude nutné označovat
+parametry jako "shared" (žádné parametry, bez efektu na globální stav
+si thread nespustí).
+
+* Posledním, nejpřátelštějším typem jsou funkce bez efektu na cokoliv
+(Pure, .NET na to má dokonce i atribut, který se občas používá :) ).
+Když do nich nevidím, tak si jenom nadeklaruju nový symbolický parametr
+a nastavím ho na výsledek volání této funkce. Dokonce pro takovou
+funkci budou moct existovat zjednodušovací pravidla, kterých by mohl
+zjedodušovač výrazů využít.
+
+Přestože "pure" funkce jsou krásné, tak pořád můžou volat virtuální
+metody na svých parametrech a vyhazovat výjimky. Virtuální metody se
+vyřeší tak, že bude vyžádováno aby všechny byly také pure aby mohla být
+funkce považována za "pure". Výjimky zanedbám a budu doufat že nikdo
+nespoléhá na výjimky z čistých funkcí (typicky se jedná jen o nullové
+dereference, vytečení z pole a tak). Pokud bude funkce nakonec spuštěna
+tak se výjimka bude samozřejmě chovat korektně, jediný případ kdy by se
+to rozbilo (tzn chovalo jinak než má) je když by nějaký kód čekal čistě
+na výjimku z pure funkce a ignoroval její výsledek.
+
+
+Další poměrně důležitá věc je zpracování výjimek, ale to se vyřeší
+anotováním všech volaných funkcí tím co se má zavolat při vyhození
+výjimky (nasbírané catch a finally bloky). Pokud by měl nějaký tento
+blok výjimku zrušit, tak program prohlásím za složitý a nebudu to
+řešit. IMO to není moc běžné, na rozdíl od finally bloků které zavřou
+nějaký stream a nebo catchů, které zabalí exception do jiné.
+
+
+Jednoduchá funkce - tedy funkce kterou by to mělo pochopit je taková,
+že se žádné z výše popsaných řešení nerozbije. Speciálně nesmí
+obsahovat neomezené cykly (cykly s nevyhodnotitelnou podmínkou), nebude
+přesahovat nějaký limit na počet skoků ve funkci (řádově 100 by mohlo
+fungovat). Funkce obsahující obskurní instrukce je taky složitá.
+Složitá funkce je pak prohlášena za side-effect, takže kód který jí
+bude využívat nebude nutně také složitý, jenom bude mít side-effecty
+(možná neprávem). To by pak mělo jít obejít tím, že se někde v
+konfiguraci řekne že je ta funkce pure, nebo má jenom lokální efekt.
+
+
+Ještě technikálie:
+Hodlám to napsat v .NETu když už interpretuju .NETový IL :),
+pravděpodobně v F#. Na čtení instrukcí jsou naštěstí knihovny, chci
+použít Mono.Cecil
+
+Ještě aby bylo jasno, tak vstupem programu (či spíše knihovny) má být
+funkce kterou chci zavolat a jaké má parametry (obecné výrazy) - tedy
+počáteční stav běhu funkce. Výstupem má být "koncový stav" funkce -
+tedy seznam vedlejších efektů a návratová hodnota. Všechno samozřejmě
+reprezentované symbolickými proměnnými.
+
+
+Standa
