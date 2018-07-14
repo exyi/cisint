@@ -14,7 +14,7 @@ let testMethod =
     fun name -> t.Definition.Methods |> Seq.find (fun m -> m.Name = name) |> MethodRef
 
 let state = ExecutionState.Empty
-let dispatcher = Interpreter.createDispatcher (fun x -> ())
+let dispatcher = Interpreter.createSynchronousDispatcher (fun x -> ())
 
 [<Fact>]
 let ``Simple XOR method`` () = task {

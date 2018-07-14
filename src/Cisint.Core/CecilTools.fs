@@ -33,10 +33,12 @@ let convertMethodInfo (method: MethodInfo) : MethodRef =
     let md = convertAssembly method.DeclaringType.Assembly
     md.LookupToken(method.MetadataToken) :?> MethodDefinition |> MethodRef
 
+
 let convertFieldInfo (field: FieldInfo) : FieldRef =
     let md = convertAssembly field.DeclaringType.Assembly
     md.LookupToken(field.MetadataToken) :?> FieldDefinition |> FieldRef
 
 let boolType = convertType typeof<bool>
+let objType = convertType typeof<obj>
 let intType = convertType typeof<int>
 let generalSentinelType = convertType typeof<GeneralSentinelType>

@@ -10,6 +10,7 @@
     <Compile Include="InterpreteterState.fs" />
     <Compile Include="ExprCompare.fs" />
     <Compile Include="ExprSimplifier.fs" />
+    <Compile Include="StateProcessing.fs" />
     <Compile Include="ExprFormat.fs" />
     <Compile Include="Interpreter.fs" />
     <Compile Include="Library.fs" />

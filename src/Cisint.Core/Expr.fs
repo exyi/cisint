@@ -93,6 +93,14 @@ with
      static member Parameter p =
         let node = LValue (Parameter p)
         SExpr.New p.Type node
+
+     static member ParamReference p =
+        let node = Reference (Parameter p)
+        let resType = Mono.Cecil.ByReferenceType(p.Type.Reference) |> TypeRef
+        SExpr.New resType node
+     static member Dereference expr =
+        let t = expr.ResultType.Reference :?> Mono.Cecil.ByReferenceType
+        SExpr.New (TypeRef t.ElementType) (SExprNode.LValue (SLExprNode.Dereference expr))
      static member LdField field target =
         let node = LValue (LdField (field, target))
         SExpr.New (TypeRef field.Reference.FieldType) node

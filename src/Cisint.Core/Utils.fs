@@ -57,7 +57,7 @@ module IArray =
       | Some x -> b.Add(x)
       | None -> ()
     b.ToImmutable()
-  let inline init count gen =
+  let init count gen =
     let b = ImmutableArray.CreateBuilder(count)
     for i = 0 to (count - 1) do
       b.Add(gen i)
@@ -84,7 +84,7 @@ let justOr a b = a || b
 
 let waitForDebug () =
   if not(System.Diagnostics.Debugger.IsAttached) then
-    printfn "Please attach a debugger, PID=%d" (System.Diagnostics.Process.GetCurrentProcess().Id)
+    printfn "Please attach a debugger, PID = %d" (System.Diagnostics.Process.GetCurrentProcess().Id)
     while not(System.Diagnostics.Debugger.IsAttached) do
         System.Threading.Thread.Sleep(100)
     System.Diagnostics.Debugger.Break()

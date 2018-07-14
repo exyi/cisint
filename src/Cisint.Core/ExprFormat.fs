@@ -5,6 +5,7 @@ open System
 open TypesystemDefinitions
 open System.Collections
 open System.Collections.Generic
+open StateProcessing
 
 let tabRight (str: string) =
     "\t" + str.Replace("\n", "\n\t")
@@ -72,13 +73,13 @@ and private sideEffectToString  (printObjectState) (se: SideEffect) =
     | SideEffect.MethodCall (m, resultValue, args, virt, globalEffect, atState) ->
         let objState = printObjectState [] atState args
         let core = sprintf "%O(%s)" m (String.Join(", ", args |> Seq.map exprToString))
-        let core = if not (String.IsNullOrEmpty objState) then sprintf ".heapStuff {\n%s\n}\n%s" (tabRight objState) core else core
         let core = if virt then "virt. " + core else core
         let core = if globalEffect then "global. " + core else core
+        let heapStuff = if String.IsNullOrEmpty objState then "" else sprintf ".heapStuff {\n%s\n}\n" (tabRight objState)
         if m.ReturnType.FullName = "System.Void" then
-            core
+            heapStuff + core
         else
-            sprintf "%s := %s" resultValue.Name core
+            heapStuff + sprintf "%s := %s" resultValue.Name core
     | SideEffect.Effects e ->
         e |> Seq.map (fun s -> sprintf " * %s" (csideEffectToString printObjectState s |> tabRight)) |> joinLines
     | _ -> failwith "NIE"
@@ -91,23 +92,6 @@ and private getEffectDependencies (se: SideEffect) =
         IArray.collect (fun (c, se) -> getEffectDependencies se) e
     | _ -> failwith "NIE"
 
-let private getObjectsFromExpressions (atState: AssumptionSet) (expressions: #seq<SExpr>) =
-    let resultObjects = Collections.Generic.List()
-    let hashSet = Collections.Generic.HashSet()
-
-    let markAsTodoExpression (expr: SExpr) =
-        expr |> SExpr.Visitor (fun a _ ->
-            match a.Node with
-            | SExprNode.LValue (SLExprNode.Parameter x) ->
-                if not (hashSet.Contains x) && atState.Heap.ContainsKey x then
-                    hashSet.Add x |> ignore
-                    resultObjects.Add x
-            | _ -> ()
-            None
-        ) |> ignore
-    Seq.iter markAsTodoExpression expressions
-    resultObjects
-
 /// prints side effects and the state of object heap
 let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
     let writtenHeapState = Collections.Generic.Dictionary<SParameter, HeapObject>()
@@ -119,8 +103,8 @@ let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
         for (o, f) in endConditionScopeCleanup |> Seq.groupBy (fst) do
             let mutable hobj = writtenHeapState.[o]
             for (_, field) in f do
-                hobj = { hobj with Fields = hobj.Fields.Remove(field) }
-            writtenHeapState.[o] = hobj
+                hobj <- { hobj with Fields = hobj.Fields.Remove(field) }
+            writtenHeapState.[o] <- hobj
         endConditionScopeCleanup.Clear()
 
     let rec printObjectState (atState: AssumptionSet) (conditionScope: SExpr clist) (o: SParameter) =

@@ -335,9 +335,43 @@ let defaultPatterns = [
     createPatternFromQuot
         [ typeof<bool>; typeof<bool> ]
         [ <@ fun a b -> not (justAnd a b) @>; <@ fun a b -> justOr (not a) (not b) @> ]
+    // bool commutativity
     createPatternFromQuot
-        [ typeof<bool>; ]
-        [ <@ fun a -> not (not a) @>; <@ fun a -> a @> ]
+        [ typeof<bool>; typeof<bool> ]
+        [ <@ fun a b -> justAnd a b @>; <@ fun a b -> justAnd b a @> ]
+    createPatternFromQuot
+        [ typeof<bool>; typeof<bool> ]
+        [ <@ fun a b -> justOr a b @>; <@ fun a b -> justOr b a @> ]
+    // bool asiciativity
+    createPatternFromQuot
+        [ typeof<bool>; typeof<bool>; typeof<bool> ]
+        [ <@ fun a b c -> justAnd a (justAnd b c) @>; <@ fun a b c -> justAnd (justAnd a b) c @> ]
+    createPatternFromQuot
+        [ typeof<bool>; typeof<bool>; typeof<bool> ]
+        [ <@ fun a b c -> justOr a (justOr b c) @>; <@ fun a b c -> justOr (justOr a b) c @> ]
+    // bool distribitivity `a & (b | c)` and `a | (b & c)`
+    createPatternFromQuot
+        [ typeof<bool>; typeof<bool>; typeof<bool> ]
+        [ <@ fun a b c -> justAnd a (justOr b c) @>; <@ fun a b c -> justOr (justAnd a b) (justAnd a c) @> ]
+    createPatternFromQuot
+        [ typeof<bool>; typeof<bool>; typeof<bool> ]
+        [ <@ fun a b c -> justOr a (justAnd b c) @>; <@ fun a b c -> justAnd (justOr a b) (justOr a c) @> ]
+    // bool `true & a`, and so on
+    createPatternFromQuot
+        [ typeof<bool> ]
+        [ <@ fun a -> justAnd true a @>; <@ fun a -> a @> ]
+    createPatternFromQuot
+        [ typeof<bool> ]
+        [ <@ fun a -> justAnd false a @>; <@ fun a -> false @> ]
+    createPatternFromQuot
+        [ typeof<bool> ]
+        [ <@ fun a -> justOr false a @>; <@ fun a -> a @> ]
+    createPatternFromQuot
+        [ typeof<bool> ]
+        [ <@ fun a -> justOr true a @>; <@ fun a -> true @> ]
+    createPatternFromQuot
+        [ typeof<bool> ]
+        [ <@ fun a -> not (not a) @>; <@ fun a -> justOr a a @>; <@ fun a -> justAnd a a @>; <@ fun a -> a @> ]
     createPatternFromQuot
         [ typeof<bool>; typeof<bool>; typeof<bool> ]
         [ <@ fun a b c -> if c then a else b @>; <@ fun a b c -> if not c then b else a @> ]

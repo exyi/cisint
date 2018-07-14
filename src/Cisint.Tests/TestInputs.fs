@@ -11,8 +11,12 @@ type Something = class
             System.Console.WriteLine ex
             0
 
-    static member SideEffect1 a = string (a + 1)
-    static member SideEffect2 (a: string) = a.Length
+    static member SideEffect1 a =
+        while true do ()
+        (a + 1).ToString()
+    static member SideEffect2 (a: string) =
+        while true do ()
+        a.Length
 
     static member WithSideEffects x y =
         if Something.SideEffect2 y > 4 then
@@ -21,3 +25,22 @@ type Something = class
             Something.SideEffect1 (x * 2)
 
 end
+
+type TestI =
+    abstract member M: unit -> int
+type TestC =
+    abstract member M: unit -> int
+    default x.M() = 1
+    abstract member M2: unit -> int
+    default x.M2() = -1
+    interface TestI with
+        member x.M() = 2
+type TestC2 =
+    inherit TestC
+    override x.M() = 3
+    interface TestI with
+        member x.M() = 4
+type TestC3 =
+    inherit TestC2
+    override x.M() = 5
+    override x.M2() = -5

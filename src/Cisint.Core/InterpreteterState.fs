@@ -40,8 +40,8 @@ module AssumptionSet =
     // TODO: cache these guys, so ids remain the same for same version
     let add (assumptions: #seq<SExpr>) x =
         { x with Set = x.Set.Union(assumptions); Version = nextASVersion () }
-    let addObj (objs: #seq<SParameter * HeapObject>) x =
-        { x with Heap = x.Heap.AddRange(objs |> Seq.map (fun (a, b) -> System.Collections.Generic.KeyValuePair(a, b))) }
+    let changeObj (objs: #seq<SParameter * HeapObject>) x =
+        { x with Heap = x.Heap.SetItems(objs |> Seq.map (fun (a, b) -> System.Collections.Generic.KeyValuePair(a, b))) }
 
     let modObj key fn x =
         { x with Heap = x.Heap.SetItem(key, fn x.Heap.[key]); Version = nextASVersion () }
@@ -68,8 +68,8 @@ type ExecutionState = {
 } with
     member x.WithCondition (conditions: #seq<SExpr>) =
         { ExecutionState.Parent = Some x; SideEffects = list<_>.Empty; Conditions = IArray.ofSeq conditions; Assumptions = AssumptionSet.add conditions x.Assumptions; Stack = x.Stack; ChangedHeapObjects = []; Locals = x.Locals }
-    member x.AddObject (objs: #seq<SParameter * HeapObject>) =
-        { x with Assumptions = AssumptionSet.addObj objs x.Assumptions; ChangedHeapObjects = List.append (List.ofSeq <| Seq.map fst objs) x.ChangedHeapObjects }
+    member x.ChangeObject (objs: #seq<SParameter * HeapObject>) =
+        { x with Assumptions = AssumptionSet.changeObj objs x.Assumptions; ChangedHeapObjects = List.append (List.ofSeq <| Seq.map fst objs) x.ChangedHeapObjects }
     static member Empty = { ExecutionState.Parent = None; SideEffects = list<_>.Empty; Conditions = array<_>.Empty; Assumptions = AssumptionSet.empty; Stack = []; ChangedHeapObjects = []; Locals = dict<_, _>.Empty }
 
 type InterpreterTodoTarget =
@@ -85,3 +85,24 @@ type InterpretationResult =
     | NewState of ExecutionState
     | Branching of InterpreterTodoItem clist
     | Return of ExecutionState
+
+type MethodArgumentEffect =
+    /// The method only reads from the passed object
+    | ReadOnly
+    /// The method may read and write to the object, but CAN'T LINK OBJECTS TOGETHER. Implies that the values of all field will become unknown after the effect is executed.
+    | Mutable
+    /// The object will also become shared
+    | Shared
+type MethodSideEffectInfo = {
+    /// The side-effect is global, i.e. can't be neglected even though it's modified arguments are unused, can't be reordered and so on
+    IsGlobal: bool
+    /// Whether the function may be used in expressions instead of side-effects
+    IsPure: bool
+    ArgumentBehavior: MethodArgumentEffect array
+    ResultIsShared: bool
+    ActualResultType: TypeRef option
+}
+
+exception FunctionTooComplicatedException of string
+let tooComplicated msg = raise (FunctionTooComplicatedException msg)
+let assertOrComplicated cond msg = if not cond then raise (FunctionTooComplicatedException msg)
