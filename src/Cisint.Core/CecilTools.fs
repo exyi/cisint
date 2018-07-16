@@ -11,7 +11,7 @@ type private ModuleData = {
     Types: Dictionary<string, TypeDefinition>
 }
 
-type private GeneralSentinelType = { A: int }
+type GeneralSentinelType = { A: int }
 
 let private assemblyCache = ConcurrentDictionary<string, ModuleData>()
 let private loadModuleCached (location: string) =

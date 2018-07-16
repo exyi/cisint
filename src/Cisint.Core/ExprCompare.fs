@@ -42,7 +42,7 @@ let rec exprCompare (a: SExpr) (b: SExpr) =
     let (t_a, t_b) = getExprBaseKey a.Node, getExprBaseKey b.Node
     if t_a <> t_b then
         t_a.CompareTo(t_b)
-    elif System.Object.ReferenceEquals(t_a, t_b) then
+    elif System.Object.ReferenceEquals(a, b) then
         0
     else
 
@@ -99,7 +99,9 @@ let rec exprCompare (a: SExpr) (b: SExpr) =
     | (a, b) -> failwithf "can't compare %A AND %A" a b
 
 let exprMin a b =
-    if (exprCompare a b) <= 0 then
+    let compare = exprCompare a b
+    softAssert (compare <> 0 || a = b) "Wrong comparisons"
+    if compare <= 0 then
         a
     else
         b

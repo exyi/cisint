@@ -197,7 +197,7 @@ let ``simplifier constant collection test`` () =
         simplifier emptyAS expr2
     )
 
-// [<Fact>]
+[<Fact>]
 let ``default simplifier conditions`` () =
     let emptyAS = AssumptionSet.empty
     let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
@@ -205,8 +205,8 @@ let ``default simplifier conditions`` () =
     let expr1 = ExprSimplifier.createExprFromQuot <@ fun a b -> if a < b then a else b @> [paramA; paramB]
     let expr2 = ExprSimplifier.createExprFromQuot <@ fun a b -> if not (a < b) then b else a @> [paramA; paramB]
 
-    printfn "%s" (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr1))
-    printfn "%s" (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr2))
+    // printfn "%s" (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr1))
+    // printfn "%s" (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr2))
     Assert.Equal(
         ExprSimplifier.simplify emptyAS expr1,
         ExprSimplifier.simplify emptyAS expr2

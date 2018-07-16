@@ -19,6 +19,18 @@ type SimplifierPattern = {
 module QP = Quotations.Patterns
 
 let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
+    let rec stripLambdas q =
+        match q with
+        | QP.Lambda (var, body) ->
+            let (vars, body) = stripLambdas body
+            var::vars, body
+        | a -> [], a
+    let vars, quotationbody = stripLambdas quotation
+
+    let typeAliases = Seq.map2 (fun (v: Quotations.Var) (t: SParameter) -> if t.Type = CecilTools.generalSentinelType then Some (KeyValuePair(v.Type, t.Type)) else None) vars parameters |> Seq.choose id |> ImmutableDictionary.CreateRange
+    let convertType t =
+        typeAliases.TryGet t |> Option.defaultWith (fun () -> CecilTools.convertType t)
+
     let rec translate (aliases: Map<_, _>) q =
         match q with
         | QP.Var v when aliases.ContainsKey v -> aliases.[v]
@@ -62,9 +74,9 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
                     None
             match instuctionFunction with
             | Some i ->
-                SExpr.InstructionCall i (CecilTools.convertType m.ReturnType) (ImmutableArray.CreateRange args)
+                SExpr.InstructionCall i (convertType m.ReturnType) (IArray.ofSeq args)
             | _ ->
-                SExpr.PureCall (CecilTools.convertMethodInfo m) (List.append (Option.toList target) args |> ImmutableArray.CreateRange)
+                SExpr.PureCall (CecilTools.convertMethodInfo m) (List.append (Option.toList target) args |> IArray.ofSeq)
         | QP.TupleGet (var, index) ->
             let f = var.Type.GetField("m_Item" + string index, BindingFlags.Instance ||| BindingFlags.NonPublic)
             SExpr.LdField (CecilTools.convertFieldInfo f) (Some <| translate aliases var)
@@ -76,14 +88,6 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
             SExpr.Condition (translate aliases c) (translate aliases a) (translate aliases b)
         | _ -> failwithf "Not supported quotation: %A" q
 
-    let rec stripLambdas q =
-        match q with
-        | QP.Lambda (var, body) ->
-            let (vars, body) = stripLambdas body
-            var::vars, body
-        | a -> [], a
-    let vars, quotationbody = stripLambdas quotation
-
     let aliases = Seq.zip vars (parameters |> Seq.map SExpr.Parameter) |> Map.ofSeq
 
     translate aliases quotationbody
@@ -91,10 +95,15 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
 let createPattern (parameters: #seq<TypeRef>) (patterns: #seq<array<SParameter> -> SExpr>) =
     let p = parameters |> IArray.ofSeq |> IArray.mapi (fun index a -> SParameter.New a (sprintf "p%d" index))
     let exprs = patterns |> IArray.ofSeq |> IArray.map (fun f -> f p)
-    { SimplifierPattern.Variables = p; TypeVars = array<_>.Empty; EqExpressions = exprs }
+    { SimplifierPattern.Variables = p
+      TypeVars = if p |> Seq.exists (fun p -> p.Type = CecilTools.generalSentinelType) then
+                     IArray.ofSeq [CecilTools.generalSentinelType]
+                 else
+                     array<_>.Empty
+      EqExpressions = exprs }
 
 let createPatternFromQuot (parameters: #seq<System.Type>) (patterns: #seq<Quotations.Expr>) =
-    createPattern (Seq.map (fun x -> CecilTools.convertType x) parameters) (Seq.map createExprFromQuot patterns)
+    createPattern (Seq.map CecilTools.convertType parameters) (Seq.map createExprFromQuot patterns)
 
 let private assignTypeParam (typeParameter: TypeRef) (assignee: TypeRef) =
     let rec v = SExpr.Visitor (fun node visitChildren ->
@@ -305,10 +314,10 @@ let private execPatterns patternMap expr =
         pts |> Seq.collect (fun (patternExpression, patternInfo) ->
             let m = patternMatch expr patternExpression patternInfo.Variables patternInfo.TypeVars
             match m with
-            | Ok (resolvedVars) when patternInfo.TypeVars.Length = 0 ->
+            | Ok (resolvedVars) ->
                 let resolvedVars = Enumerable.ToDictionary(resolvedVars |> Seq.mapi(fun index var -> (patternInfo.Variables.[index], var)), fst, snd)
                 patternInfo.EqExpressions |> IArray.choose (fun eqExpr ->
-                    if eqExpr = expr then None
+                    if eqExpr = patternExpression then None
                     else
                         let mutable ok = true
                         let assigned =
@@ -318,6 +327,13 @@ let private execPatterns patternMap expr =
                                 | (true, None) -> ok <- false; None
                                 | (false, _) -> None
                             ) eqExpr
+                        let typeParams = patternInfo.TypeVars
+                                         |> IArray.map (fun x ->
+                                             let (KeyValue (_, Some a)) = resolvedVars |> Seq.find (fun (KeyValue(k, v)) -> k.Type = x && v.IsSome)
+                                             (x, a.ResultType)
+                                         )
+                        let assigned = Seq.fold (fun e (paramType, argType) -> assignTypeParam paramType argType e) assigned typeParams
+
                         if ok then Some assigned else None
                 )
             | _ -> array<_>.Empty
@@ -451,12 +467,28 @@ let defaultPatterns = [
     createPatternFromQuot
         [ typeof<bool> ]
         [ <@ fun a -> not (not a) @>; <@ fun a -> justOr a a @>; <@ fun a -> justAnd a a @>; <@ fun a -> a @> ]
+
+    // generic if-conversions
     createPatternFromQuot
-        [ typeof<bool>; typeof<bool>; typeof<bool> ]
-        [ <@ fun a b c -> if c then a else b @>; <@ fun a b c -> if not c then b else a @> ]
+        [ typeof<bool>; typeof<CecilTools.GeneralSentinelType>;typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun c a b -> if c then a else b @>; <@ fun c a b -> if not c then b else a @> ]
     createPatternFromQuot
-        [ typeof<int>; typeof<int> ]
+        [ typeof<bool>; typeof<CecilTools.GeneralSentinelType>; ]
+        [ <@ fun c a -> if c then a else a @>; <@ fun _ a -> a @> ]
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun a b -> if true then a else b @>; <@ fun a _ -> a @>; <@ fun a b -> if false then b else a @> ]
+
+    // general comparison conversions
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
         [ <@ fun a b -> a < b @>; <@ fun a b -> b > a @> ]
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun a b -> a = b @>; <@ fun a b -> b = a @> ]
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun a -> a = a @>; <@ fun _ -> true @> ]
 ]
 
 let simplify = createSimplifier defaultPatterns
