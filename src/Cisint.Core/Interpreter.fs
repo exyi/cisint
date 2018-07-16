@@ -220,6 +220,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Ldc_I8 then pushToStack (SExpr.ImmConstant (instr.Operand :?> int64))
     elif op = OpCodes.Ldc_R8 || op = OpCodes.Ldc_R4 then pushToStack (SExpr.ImmConstant (instr.Operand |> Convert.ToDouble))
     elif op = OpCodes.Ldnull then pushToStack (SExpr.ImmConstant (box null))
+    elif op = OpCodes.Ldstr then pushToStack (SExpr.ImmConstant (instr.Operand :?> string))
 
     elif op = OpCodes.Ret then InterpretationResult.Return state
 
@@ -500,6 +501,7 @@ and interpretVirtualMethod method state args dispatcher =
             let forkedState = if condition = SExpr.ImmConstant true then state
                               else state.WithCondition [condition]
             states.Add forkedState
+            let args = args.SetItem(0, SExpr.Cast InstructionFunction.Cast method.DeclaringType args.[0])
             if isVirtual then
                 // not devirtualizable -> side effect
                 fun () -> addCallSideEffect method (getMethodSideEffectInfo method) args (*virt*)true forkedState |> Task.FromResult

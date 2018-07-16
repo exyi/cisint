@@ -238,7 +238,14 @@ let rec analyseReturnType (expr: SExpr) state =
         if hobj.TypeIsDefinite then
             [ SExpr.ImmConstant true, hobj.Type ]
         else []
-    | _ -> [] // TODO: conditions, ...
+    | SExprNode.Constant _ -> [ SExpr.ImmConstant true, expr.ResultType ]
+    | SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box), _, EqArray.AP [ expr ]) ->
+        analyseReturnType expr state
+    | SExprNode.Condition (cond, ifTrue, ifFalse) ->
+        List.append
+            (analyseReturnType ifTrue state |> List.map (fun (c, e) -> ExprSimplifier.simplify state.Assumptions (SExpr.BoolAnd cond c), e))
+            (analyseReturnType ifFalse state |> List.map (fun (c, e) -> ExprSimplifier.simplify state.Assumptions (SExpr.BoolAnd (SExpr.BoolNot cond) c), e))
+    | _ -> []
 
 let rec findOverridenMethod (t: TypeRef) (m: MethodRef) =
     if TypeRef(m.Reference.DeclaringType) = t then
@@ -248,7 +255,7 @@ let rec findOverridenMethod (t: TypeRef) (m: MethodRef) =
         let methods = t.Definition.Methods
         let explicitOverride = methods |> Seq.tryFind (fun m2 ->
             m2.Overrides |> Seq.exists (fun ovr -> MethodRef.AreSameMethods (genericResolver ovr) m.Reference))
-        let matchedOverride () = methods |> Seq.tryFind (fun m2 -> m2.Name = m.Reference.Name && ((genericResolver m2 |> MethodRef).ParameterTypes |> Seq.toList) = (m.ParameterTypes |> Seq.toList))
+        let matchedOverride () = methods |> Seq.tryFind (fun m2 -> m2.Name = m.Reference.Name && m.Reference.HasThis && ((genericResolver m2 |> MethodRef).ParameterTypes |> Seq.toList).Tail = (m.ParameterTypes |> Seq.toList).Tail)
         explicitOverride |> Option.orElseWith matchedOverride |> Option.map MethodRef |> Option.defaultWith (fun () -> findOverridenMethod t.BaseType.Value m)
 
 /// Returns devirtualization info - list of (condition, method called, if it's virtual)

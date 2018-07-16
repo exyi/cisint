@@ -107,17 +107,17 @@ let waitForDebug () =
 let softAssert condition message =
     if not condition then
         if System.Environment.GetEnvironmentVariable "DEBUG" |> String.IsNullOrEmpty then
-                failwithf "Assertion failed: %s" message
+            failwithf "Assertion failed: %s" message
         else
-                let b = Console.ForegroundColor
-                Console.ForegroundColor <- ConsoleColor.Red
-                printfn "Assertion failed: %s" message
-                printfn "Do you want to [c]ontinue, [d]ebug or [t]hrow?"
-                Console.ForegroundColor <- b
-                match Console.ReadKey(true).KeyChar with
-                | 'c' -> ()
-                | 'd' -> waitForDebug ()
-                | _ -> failwithf "Assertion failed: %s" message
+            let b = Console.ForegroundColor
+            Console.ForegroundColor <- ConsoleColor.Red
+            printfn "Assertion failed: %s" message
+            printfn "Do you want to [c]ontinue, [d]ebug or [t]hrow?"
+            Console.ForegroundColor <- b
+            match Console.ReadKey(true).KeyChar with
+            | 'c' -> ()
+            | 'd' -> waitForDebug ()
+            | _ -> failwithf "Assertion failed: %s" message
 
 
 type TypeReference with

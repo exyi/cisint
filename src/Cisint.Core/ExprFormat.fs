@@ -150,11 +150,9 @@ let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
 
                     if heapObj.IsShared = SExpr.ImmConstant true then
                         yield sprintf "shared %s" o.Name
-                    else if heapObj.IsShared = SExpr.ImmConstant false then
-                        yield! fieldAssignments
-                    else
+                    elif heapObj.IsShared <> SExpr.ImmConstant false then
                         yield sprintf "shared %s iff %s" o.Name (exprToString heapObj.IsShared)
-                        yield! fieldAssignments
+                    yield! fieldAssignments
                 ]
             | (true, oldObj) when oldObj = heapObj ->
                 []

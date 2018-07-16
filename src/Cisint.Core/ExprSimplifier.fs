@@ -254,9 +254,11 @@ let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
     // conversion to and back
     | SExprNode.InstructionCall (InstructionFunction.Convert, convertTo, EqArray.AP [ { Node = SExprNode.InstructionCall(InstructionFunction.Convert, convertFrom, EqArray.AP [insideExpr]) } as convExpr ])
         when convertTo = insideExpr.ResultType && lossLessConversions.Contains (struct (convertTo, convertFrom)) ->
-        if insideExpr.ResultType = convertTo then
-            insideExpr
-        else SExpr.InstructionCall InstructionFunction.Convert convertTo [ insideExpr ]
+        SExpr.Cast InstructionFunction.Convert convertTo insideExpr
+    // take only outer conversion
+    | SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box) as ifc, castTo, EqArray.AP [ { Node = SExprNode.InstructionCall((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box), castFrom, EqArray.AP [insideExpr]) } as convExpr ])
+        when isDownCast convExpr.ResultType castFrom || not(isDownCast castFrom castTo) ->
+        SExpr.Cast ifc castTo insideExpr
     // redundant conversions and casts
     | SExprNode.InstructionCall ((InstructionFunction.Convert | InstructionFunction.Cast | InstructionFunction.IsInst), convertTo, EqArray.AP [ insideExpr ])
         when insideExpr.ResultType = convertTo ->
@@ -280,6 +282,12 @@ let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
         | Some commonCast ->
             SExpr.InstructionCall ifc resultType [ SExpr.Cast InstructionFunction.Cast commonCast expr1; SExpr.Cast InstructionFunction.Cast commonCast expr2 ]
         | _ -> expr
+    // cast and null compare
+    | SExprNode.InstructionCall (InstructionFunction.C_Eq, _, EqArray.AP [
+            { Node = SExprNode.Constant null } as nullLiteral
+            { Node = SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box), _, EqArray.AP [expr2]) } as cast
+        ]) when isDownCast expr2.ResultType cast.ResultType ->
+        SExpr.InstructionCall InstructionFunction.C_Eq CecilTools.boolType [ SExpr.New expr2.ResultType (SExprNode.Constant null); expr2 ]
     // expression in assumptions is true
     | _ when expr.ResultType = CecilTools.boolType && assumptions.Set.Contains expr -> SExpr.ImmConstant true
     | _ -> expr

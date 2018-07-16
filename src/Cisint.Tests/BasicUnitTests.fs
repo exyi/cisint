@@ -9,6 +9,8 @@ open Expression
 open Expression
 open System.Collections.Generic
 open InterpreterState
+open Cisint.Tests.TestInputs
+open TypesystemDefinitions
 
 [<Fact>]
 let ``Cecil smoke test`` () =
@@ -211,3 +213,10 @@ let ``default simplifier conditions`` () =
         ExprSimplifier.simplify emptyAS expr1,
         ExprSimplifier.simplify emptyAS expr2
     )
+
+[<Fact>]
+let ``basic overload resolution`` () =
+    let o = CecilTools.convertType typeof<TestRecord>
+    let m = CecilTools.objType.Definition.Methods |> Seq.find (fun m -> m.Name = "GetHashCode") |> MethodRef
+    let m2 = StateProcessing.findOverridenMethod o m
+    Assert.Equal(o, m2.DeclaringType)

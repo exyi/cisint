@@ -44,7 +44,7 @@ type Something = class
         (TestRecord.Create x).WithStr y
 
     static member CreateAndUseTheObject a =
-        (Something.CreateSomeObject a (a.ToString())).GetHashCode()
+        (Something.CreateSomeObject a "1").GetHashCode()
 
     static member UseSomeGenerics (a:string) (b: string) =
         let a = { Something = a }
