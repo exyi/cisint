@@ -184,6 +184,12 @@ let private lossLessConversions =
     new HashSet<struct (TypeRef * TypeRef)>([
         struct (CecilTools.boolType, CecilTools.intType)
     ])
+let private isDownCast (fromType: TypeRef) (toType: TypeRef) =
+    fromType.BaseTypeChain.Contains toType || toType.Interfaces.Contains toType
+let findCommonAncestor (a: TypeRef) (b: TypeRef) =
+    let (cA, cB) = List.rev a.BaseTypeChain, List.rev b.BaseTypeChain
+    Seq.init (min cA.Length cB.Length) (fun i -> (cA.[i], cB.[i])) |> Seq.tryFindBack (fun (a, b) -> a = b) |> Option.map fst
+
 let private convertTo (t: TypeRef) isChecked =
     let reflectionType = System.Type.GetType t.FullName
     let invoke =
@@ -231,20 +237,42 @@ let private executeConstantInstruction i resultType (args: obj array) =
 
 let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
     match expr.Node with
+    // constant folding
     | SExprNode.InstructionCall (i, resultT, args) when args.arr |> IArray.forall (fun a -> match a.Node with SExprNode.Constant _ -> true | _ -> false) ->
-        // constant folding
         let args = args.arr |> IArray.map (fun a -> match a.Node with SExprNode.Constant a -> a | _ -> failwith "wtf")
         let result = executeConstantInstruction i resultT args
         SExpr.New expr.ResultType (SExprNode.Constant result)
+    // conversion to and back
     | SExprNode.InstructionCall (InstructionFunction.Convert, convertTo, EqArray.AP [ { Node = SExprNode.InstructionCall(InstructionFunction.Convert, convertFrom, EqArray.AP [insideExpr]) } as convExpr ])
         when convertTo = insideExpr.ResultType && lossLessConversions.Contains (struct (convertTo, convertFrom)) ->
         if insideExpr.ResultType = convertTo then
             insideExpr
         else SExpr.InstructionCall InstructionFunction.Convert convertTo [ insideExpr ]
-    | SExprNode.InstructionCall (InstructionFunction.Convert, convertTo, EqArray.AP [ insideExpr ])
+    // redundant conversions and casts
+    | SExprNode.InstructionCall ((InstructionFunction.Convert | InstructionFunction.Cast | InstructionFunction.IsInst), convertTo, EqArray.AP [ insideExpr ])
         when insideExpr.ResultType = convertTo ->
         insideExpr
-
+    // propagate unary expressions into conditionals
+    | SExprNode.InstructionCall (ifc, resultType, EqArray.AP [ { Node = SExprNode.Condition (condition, ifTrue, ifFalse) } as _innerNode ]) ->
+        SExpr.Condition condition (SExpr.InstructionCall ifc resultType [ifTrue]) (SExpr.InstructionCall ifc resultType [ifFalse])
+    // boxing reference type is like a downcast
+    | SExprNode.InstructionCall (InstructionFunction.Box, resultType, EqArray.AP [ arg ]) when arg.ResultType.IsObjectReference ->
+        softAssert (resultType = CecilTools.objType) "Boxing to non-object type."
+        SExpr.Cast InstructionFunction.Cast resultType arg
+    // downcast will always use Cast instruction
+    | SExprNode.InstructionCall (InstructionFunction.IsInst, resultType, EqArray.AP [ arg ]) when arg.ResultType.IsObjectReference && isDownCast arg.ResultType resultType ->
+        SExpr.Cast InstructionFunction.Cast resultType arg
+    // reference comparison with conversions
+    | SExprNode.InstructionCall (InstructionFunction.C_Eq as ifc, resultType, EqArray.AP [
+            { Node = SExprNode.InstructionCall (InstructionFunction.Cast, _, EqArray.AP [expr1]) } as cast1
+            { Node = SExprNode.InstructionCall (InstructionFunction.Cast, _, EqArray.AP [expr2]) } as cast2
+        ]) when isDownCast expr1.ResultType cast1.ResultType && isDownCast expr2.ResultType cast2.ResultType ->
+        match findCommonAncestor expr1.ResultType expr2.ResultType with
+        | Some commonCast ->
+            SExpr.InstructionCall ifc resultType [ SExpr.Cast InstructionFunction.Cast commonCast expr1; SExpr.Cast InstructionFunction.Cast commonCast expr2 ]
+        | _ -> expr
+    // expression in assumptions is true
+    | _ when expr.ResultType = CecilTools.boolType && assumptions.Set.Contains expr -> SExpr.ImmConstant true
     | _ -> expr
 
 let private getExprBaseKey =
@@ -304,7 +332,7 @@ let private simplifyExpressionCore (map: PatternMap) (assumptions: AssumptionSet
             let expr_s = visitChildren expr_t
             let p = execPatterns map expr_s
                     //|> fun a -> printfn "\t\texecuting patterns for %s, got %d" (ExprFormat.exprToString expr_s) (Seq.length a); a
-                    |> Seq.append [expr_s; expr_t]
+                    |> Seq.append [expr_s]
                     |> Seq.reduce (ExprCompare.exprMin)
             Some p
         | _ ->

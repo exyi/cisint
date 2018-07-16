@@ -9,6 +9,13 @@ type TestRecord = {
     member x.WithStr t =
         { x with AnotherProp = Some t }
 
+type GenericType<'x> when 'x : not struct = {
+    Something: 'x
+} with
+    member x.Contains b = LanguagePrimitives.PhysicalEquality x.Something b
+    member x.DoNothing d = d
+    member x.ProcWithNothing () = x.DoNothing x.Something
+
 type Something = class
     static member A a b = a ^^^ b
     static member WithCondition a b = if a + 1 > b then a + 1 else b
@@ -39,7 +46,13 @@ type Something = class
     static member CreateAndUseTheObject a =
         (Something.CreateSomeObject a (a.ToString())).GetHashCode()
 
+    static member UseSomeGenerics (a:string) (b: string) =
+        let a = { Something = a }
+        a.Contains (a.ProcWithNothing ()) || a.Contains b
+
 end
+
+
 
 
 type TestI =

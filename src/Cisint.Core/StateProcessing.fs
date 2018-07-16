@@ -7,6 +7,55 @@ open System.Collections.Generic
 open System.Collections.Immutable
 open System.Diagnostics.Contracts
 
+
+let stackLoadConvert (expr: SExpr) =
+    let t = expr.ResultType
+    if not t.IsPrimitive then
+        expr
+    elif t.FullName = typeof<int>.FullName || t.FullName = typeof<int64>.FullName || t.FullName = typeof<float>.FullName || t.FullName = typeof<System.UIntPtr>.FullName || t.FullName = typeof<System.IntPtr>.FullName then
+        expr
+    elif t.FullName = typeof<uint64>.FullName then
+        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<int64>) [ expr ]
+    elif t.FullName = typeof<System.Single>.FullName then
+        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<float>) [ expr ]
+    elif t.FullName = typeof<bool>.FullName ||
+            t.FullName = typeof<char>.FullName ||
+            t.FullName = typeof<Byte>.FullName ||
+            t.FullName = typeof<SByte>.FullName ||
+            t.FullName = typeof<Int16>.FullName ||
+            t.FullName = typeof<UInt16>.FullName ||
+            t.FullName = typeof<UInt32>.FullName then
+        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<int32>) [ expr ]
+    else
+        tooComplicated <| sprintf "unsupported stack load conversion from '%O'." expr.ResultType
+
+let stackConvert (expr: SExpr) (targetType: TypeRef) =
+    if expr.ResultType = targetType then expr
+    elif expr.ResultType.IsPrimitive && targetType.IsPrimitive then
+        SExpr.Cast InstructionFunction.Convert targetType expr
+    elif expr.ResultType.IsObjectReference && targetType.IsObjectReference &&
+         (List.contains targetType expr.ResultType.BaseTypeChain || expr.ResultType.Interfaces.Contains targetType) then
+        SExpr.Cast InstructionFunction.Cast targetType expr
+    elif expr.ResultType.IsObjectReference && targetType.IsObjectReference &&
+        expr.Node = SExprNode.Constant null then
+        SExpr.New targetType (expr.Node)
+    else
+        softAssert false <| sprintf "Can't do implicit stack conversion %O -> %O" expr.ResultType targetType
+        failwith ""
+
+let stackConvertToUnsigned (a: SExpr) =
+    if a.ResultType.FullName = typeof<int32>.FullName then
+        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<uint32>) [a]
+    elif a.ResultType.FullName = typeof<int64>.FullName then
+        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<uint64>) [a]
+    elif a.ResultType.FullName = typeof<float>.FullName then
+        a // TODO: float.NaN glitches :(
+    elif a.Node = SExprNode.Constant null then
+        SExpr.ImmConstant 0u
+    else
+        softAssert false <| sprintf "Coertion to unsigned '%O' not .supported" a.ResultType
+        failwith ""
+
 let rec private accessObjectProperty (fn: SExpr -> SParameter option -> SExpr * (SExpr -> ExecutionState -> ExecutionState)) expr =
     let procLV lv =
         match lv with
@@ -78,7 +127,7 @@ and initHeapObject (t: TypeRef) definiteType =
         |> Seq.filter (fun f -> not f.IsStatic)
         |> Seq.map FieldRef
         |> Seq.map (fun f ->
-            assert(not t.Reference.IsValueType || f.FieldType <> t)
+            softAssert (not t.Reference.IsValueType || f.FieldType <> t) "Value type can't contain field of itself"
             let value, heapObjects = createDefaultValue f.FieldType
             KeyValuePair(f, value), heapObjects
         )
@@ -116,7 +165,7 @@ let mergeStates a b =
         Seq.append a.ChangedHeapObjects b.ChangedHeapObjects |> Seq.distinct |> Seq.map (fun op ->
             match (a.Assumptions.Heap.TryGetValue op, b.Assumptions.Heap.TryGetValue op) with
             | ((true, obj_a), (true, obj_b)) ->
-                assert (obj_a.Type = obj_b.Type) // TODO: type changes
+                softAssert (obj_a.Type = obj_b.Type) "Types have changed in different branches" // TODO: type changes
                 let combined =
                     { HeapObject.Type = obj_a.Type
                       TypeIsDefinite = obj_a.TypeIsDefinite && obj_b.TypeIsDefinite
@@ -147,7 +196,7 @@ let mergeStates a b =
                     Some(KeyValuePair(loc, SExpr.Condition condition v_a v_b |> ExprSimplifier.simplify AssumptionSet.empty))
             ))
 
-    assert (a.Stack.Length = b.Stack.Length)
+    softAssert (a.Stack.Length = b.Stack.Length) "Stack has different length in different branches"
     let stack =
         List.map2 (fun a b ->
             if a = b then a
@@ -340,10 +389,10 @@ let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt st
     let hasNonvirtualArgs = virt || isCallNonVirtual m args state
     if seInfo.IsPure && hasNonvirtualArgs then
         let expressionResult = SExpr.PureCall m args
-        { state with Stack = expressionResult :: state.Stack }
+        { state with Stack = stackLoadConvert expressionResult :: state.Stack }
     else
 
-    let result = sideEffectResult m.ReturnType
+    let result = sideEffectResult (TypeRef (m.ReturnType.Reference.ResolvePreserve m.GenericParameterAssigner))
     // mark everything reachable as shared
     let state =  markSideEffectArguments args seInfo.ArgumentBehavior state
     let effect = SideEffect.MethodCall (m, result, args, virt, seInfo.IsGlobal, state.Assumptions)
@@ -351,7 +400,7 @@ let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt st
 
     let state = addResultObject result seInfo.ActualResultType seInfo.ResultIsShared state
     if result.Type.FullName = "System.Void" then state
-    else { state with Stack = SExpr.Parameter result :: state.Stack }
+    else { state with Stack = stackLoadConvert (SExpr.Parameter result) :: state.Stack }
 let private addFieldReadSideEffect (target: SParameter option) (field: FieldRef) =
     let result = sideEffectResult (TypeRef field.Reference.FieldType)
     result, (fun condition state ->

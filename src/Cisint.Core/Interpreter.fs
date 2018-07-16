@@ -49,50 +49,6 @@ type InstructionPrefixes = {
 
 let noPrefixes = { Constained = None; InstructionPrefixes.NoCheck = false; ReadOnly = false; Tail = false; Unaligned = false; Volatile = true }
 
-let stackLoadConvert (expr: SExpr) =
-    let t = expr.ResultType
-    if not t.IsPrimitive then
-        expr
-    elif t.FullName = typeof<int>.FullName || t.FullName = typeof<int64>.FullName || t.FullName = typeof<float>.FullName || t.FullName = typeof<System.UIntPtr>.FullName || t.FullName = typeof<System.IntPtr>.FullName then
-        expr
-    elif t.FullName = typeof<uint64>.FullName then
-        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<int64>) [ expr ]
-    elif t.FullName = typeof<System.Single>.FullName then
-        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<float>) [ expr ]
-    elif t.FullName = typeof<bool>.FullName ||
-            t.FullName = typeof<char>.FullName ||
-            t.FullName = typeof<Byte>.FullName ||
-            t.FullName = typeof<SByte>.FullName ||
-            t.FullName = typeof<Int16>.FullName ||
-            t.FullName = typeof<UInt16>.FullName ||
-            t.FullName = typeof<UInt32>.FullName then
-        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<int32>) [ expr ]
-    else
-        tooComplicated <| sprintf "unsupported stack load conversion from '%O'." expr.ResultType
-
-let stackArithmeticCoerce a b =
-    if a.ResultType = b.ResultType then
-        (a, b)
-    elif a.ResultType.IsObjectReference && b.ResultType.IsObjectReference then
-        let (cA, cB) = List.rev a.ResultType.BaseTypeChain, List.rev b.ResultType.BaseTypeChain
-        let commonCast, _ = Seq.init (min cA.Length cB.Length) (fun i -> (cA.[i], cB.[i])) |> Seq.findBack (fun (a, b) -> a = b)
-        (SExpr.Cast InstructionFunction.Cast commonCast a, SExpr.Cast InstructionFunction.Cast commonCast b)
-    else
-        waitForDebug ()
-        failwithf "coertion %O <-> %O not supported (expressions %s, %s)" a.ResultType b.ResultType (ExprFormat.exprToString a) (ExprFormat.exprToString b)
-
-let stackConvertToUnsigned (a: SExpr) =
-    if a.ResultType.FullName = typeof<int32>.FullName then
-        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<uint32>) [a]
-    elif a.ResultType.FullName = typeof<int64>.FullName then
-        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<uint64>) [a]
-    elif a.ResultType.FullName = typeof<float>.FullName then
-        a // TODO: float.NaN glitches :(
-    elif a.Node = SExprNode.Constant null then
-        SExpr.ImmConstant 0u
-    else
-        failwithf "Coertion to unsigned '%O' not .supported" a.ResultType
-
 let private runAndMerge todoFunctions dispatchFrame =
     let result :Task<ExecutionState []> = Task.WhenAll<ExecutionState>(todoFunctions |> Seq.map (dispatchFrame))
 
@@ -105,7 +61,17 @@ let private runAndMerge todoFunctions dispatchFrame =
         // TODO: merge more than two states
     }
 
-let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPrefixes) ((locals, arguments): (SParameter array) * (SParameter array)) (state: ExecutionState) =
+let stackArithmeticCoerce a b =
+    if a.ResultType = b.ResultType then
+        (a, b)
+    elif a.ResultType.IsObjectReference && b.ResultType.IsObjectReference then
+        let (Some commonCast) = ExprSimplifier.findCommonAncestor a.ResultType b.ResultType
+        (SExpr.Cast InstructionFunction.Cast commonCast a, SExpr.Cast InstructionFunction.Cast commonCast b)
+    else
+        waitForDebug ()
+        failwithf "coertion %O <-> %O not supported (expressions %s, %s)" a.ResultType b.ResultType (ExprFormat.exprToString a) (ExprFormat.exprToString b)
+
+let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction * InstructionPrefixes) ((locals, arguments): (SParameter array) * (SParameter array)) (state: ExecutionState) =
     let proc1stack (fn: SExpr -> SExpr) =
         let result, rest =
             match state.Stack with
@@ -126,7 +92,9 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
     let procArit fn =
         proc2stack (fun a b -> let (a, b) = stackArithmeticCoerce a b in fn a b)
     let procBasicArit fn preproc =
-        procArit (fun a b -> SExpr.InstructionCall fn a.ResultType [preproc a;preproc b])
+        procArit (fun a b ->
+            let (a, b) = preproc a, preproc b
+            SExpr.InstructionCall fn a.ResultType [a;b])
 
     let convert t preprocess =
         proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType t) [preprocess a] |> stackLoadConvert)
@@ -146,17 +114,17 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
                 { InterpreterTodoItem.State = state.WithCondition [ SExpr.BoolNot cSimpl ]; Target = InterpreterTodoTarget.CurrentMethod (instr.Next, false) }
             ]
     let doBranchWithCond opcode i2 =
-        let state2 = match interpretInstruction (i2, noPrefixes) (locals, arguments) state with InterpretationResult.NewState s -> s | _ -> failwith "wtf"
+        let state2 = match interpretInstruction genericAssigner (i2, noPrefixes) (locals, arguments) state with InterpretationResult.NewState s -> s | _ -> failwith "wtf"
         let bInst = Cil.Instruction.Create(opcode, instr.Operand :?> Cil.Instruction)
         bInst.Next <- instr.Next; bInst.Offset <- instr.Offset;
-        interpretInstruction (bInst, prefixes) (locals, arguments) state2
+        interpretInstruction genericAssigner (bInst, prefixes) (locals, arguments) state2
 
     let getLocal p =
         pushToStack (state.Locals.[p] |> stackLoadConvert)
     let setLocal p =
         match state.Stack with
         | a :: rest ->
-            InterpretationResult.NewState { state with Stack = rest; Locals = state.Locals.SetItem(p, a) }
+            InterpretationResult.NewState { state with Stack = rest; Locals = state.Locals.SetItem(p, stackConvert a p.Type) }
         | _ -> failwithf "Can't pop a value from stack at %O" instr
 
     let loadIndirect expectedType =
@@ -233,6 +201,8 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
     elif op = OpCodes.Conv_Ovf_I8_Un then convertChecked typeof<int64> stackConvertToUnsigned
     elif op = OpCodes.Conv_Ovf_U8_Un then convertChecked typeof<uint64> stackConvertToUnsigned
 
+    elif op = OpCodes.Box then proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Box CecilTools.objType [a])
+
     elif op = OpCodes.Dup then
         pushToStack <| List.head state.Stack
     elif op = OpCodes.Nop then InterpretationResult.NewState state
@@ -287,7 +257,7 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
         doBranchWithCond OpCodes.Brfalse (Cil.Instruction.Create(OpCodes.Ceq))
 
     elif op = OpCodes.Call || op = OpCodes.Callvirt then
-        let method = instr.Operand :?> MethodReference
+        let method = (instr.Operand :?> MethodReference).ResolvePreserve genericAssigner
         let returnI = if prefixes.Tail then None; else Some instr.Next
         let args, state = state.PopStack (method.Parameters.Count + if method.HasThis then 1 else 0)
         if op = OpCodes.Callvirt && prefixes.Constained.IsSome then
@@ -337,41 +307,45 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
 
     elif op = OpCodes.Newobj then
         // TODO: Delegates
-        let constructor = instr.Operand :?> Mono.Cecil.MethodReference
+        let constructor = (instr.Operand :?> Mono.Cecil.MethodReference).ResolvePreserve genericAssigner
         let args, state = state.PopStack constructor.Parameters.Count
         let object, state = createEmptyHeapObject (TypeRef constructor.DeclaringType) state
         let state = { state with Stack = SExpr.Parameter object :: state.Stack }
         let returnI = if prefixes.Tail then None; else Some instr.Next
+        let firstArg =
+            if object.Type.Reference.IsValueType then
+                SExpr.ParamReference object
+            else SExpr.Parameter object
         InterpretationResult.Branching [
-            { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef constructor, SExpr.Parameter object :: args, returnI, false) }
+            { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef constructor, firstArg :: args, returnI, false) }
         ]
     elif op = OpCodes.Ldfld then
-        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
         let [target], state = state.PopStack 1
         let result, state = accessField target field state
         InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
 
     elif op = OpCodes.Ldsfld then
-        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
         let result, state = accessStaticField field state
         InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
 
     elif op = OpCodes.Ldflda then
         // the address is simply loaded as an expression. The magic is handled when it's dereferenced
-        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
         proc1stack (fun e -> SExpr.New field.FieldType (SExprNode.Reference (SLExprNode.LdField (field, Some e))))
     elif op = OpCodes.Ldsflda then
         let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
         pushToStack (SExpr.New field.FieldType (SExprNode.Reference (SLExprNode.LdField (field, None))))
 
     elif op = OpCodes.Stfld then
-        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
         let [target; value], state = state.PopStack 2
         let state = setField target field value state
         InterpretationResult.NewState state
 
     elif op = OpCodes.Stsfld then
-        let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
+        let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
         let [value], state = state.PopStack 1
         let state = setStaticField field value state
         InterpretationResult.NewState state
@@ -380,11 +354,13 @@ let rec interpretInstruction ((instr, prefixes): Cil.Instruction * InstructionPr
     else tooComplicated <| sprintf "unsupported instruction %O" instr
 
 let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args: SExpr array) (dispatchFrame: InterpreterFrameDispatcher) =
-    let method = methodref.Definition
-    assertOrComplicated (method.Body <> null) "method does not have body"
-    assertOrComplicated (not method.ContainsGenericParameter) "method contains generic parameters"
-    assertOrComplicated (method.Body.ExceptionHandlers.Count = 0) "there are exception handlers" // TODO
-    assert (method.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id)
+    let methodDef = methodref.Definition
+    let method = methodref.Reference
+    let genericAssigner = methodref.GenericParameterAssigner
+    assertOrComplicated (methodDef.Body <> null) "method does not have body"
+    assertOrComplicated (not method.HasGenericParameters) "method contains unbound generic parameters"
+    assertOrComplicated (methodDef.Body.ExceptionHandlers.Count = 0) "there are exception handlers" // TODO
+    softAssert (methodDef.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id) "variable indixes don't fit"
 
     let frameInfo = { InterpreterFrameInfo.Method = methodref; Args = args; FrameToken = obj(); CurrentInstruction = null; BranchingFactor = 1 }
 
@@ -392,13 +368,13 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
     // method.Body.Instructions |> Seq.iter (printfn "\t%O")
 
     IO.Directory.CreateDirectory "dasm" |> ignore
-    IO.File.WriteAllLines("dasm/" + string methodref + ".il", method.Body.Instructions |> Seq.map (sprintf "\t%O"))
+    IO.File.WriteAllLines("dasm/" + methodDef.FullName.Replace("/", "_") + ".il", methodDef.Body.Instructions |> Seq.map (sprintf "\t%O"))
 
-    let locals = method.Body.Variables
-                 |> Seq.map (fun var -> SParameter.New (TypeRef var.VariableType) (sprintf "%s_loc%d" method.Name var.Index))
+    let locals = methodDef.Body.Variables
+                 |> Seq.map (fun var -> SParameter.New (TypeRef (var.VariableType.ResolvePreserve genericAssigner)) (sprintf "%s_loc%d" method.Name var.Index))
                  |> IArray.ofSeq
-    let parameters = Seq.append (if method.IsStatic then [] else [method.Body.ThisParameter]) method.Parameters
-                     |> Seq.map (fun var -> SParameter.New (TypeRef var.ParameterType) (sprintf "%s_loc%d" method.Name var.Index))
+    let parameters = Seq.append (if methodDef.IsStatic then [] else [methodDef.Body.ThisParameter]) method.Parameters
+                     |> Seq.map (fun var -> SParameter.New (TypeRef (var.ParameterType.ResolvePreserve genericAssigner)) (sprintf "%s_loc%d" method.Name var.Index))
                      |> IArray.ofSeq
     let state = (initLocals locals) state
     let state = { state with Locals = state.Locals.AddRange(Seq.map2 (fun p a -> KeyValuePair(p, a)) parameters args) }
@@ -417,7 +393,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
         elif i.OpCode = OpCodes.Volatile then
             interpretBlock { prefixes with Volatile = true } i.Next state
         else
-            match interpretInstruction (i, prefixes) (locals, parameters) state with
+            match interpretInstruction genericAssigner (i, prefixes) (locals, parameters) state with
             | InterpretationResult.NewState state ->
                 interpretBlock noPrefixes i.Next state
             | a -> a
@@ -444,7 +420,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                 |> Seq.map (fun t () ->
                     match t.Target with
                     | InterpreterTodoTarget.CurrentMethod (i, leave) ->
-                        assert (not leave) //TODO exceptions
+                        assertOrComplicated (not leave) "Contains leave instruction" //TODO exceptions
                         // printfn "Jumping to '%O', with condition %A" i (List.ofSeq t.State.Conditions |> List.map ExprFormat.exprToString)
                         interpretFrom i t.State cycleDetection
                     | InterpreterTodoTarget.CallMethod (m, args, returnI, virt) ->
@@ -452,8 +428,9 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                         let savedStack = state.Stack
                         let state = { state with Stack = [] }
                         let recurse = if virt then interpretVirtualMethod else interpretMethod
+                        let args = IArray.ofSeq (Seq.map2 stackConvert args m.ParameterTypes)
                         task {
-                            let! resultState = recurse m state (IArray.ofSeq args) dispatchFrame
+                            let! resultState = recurse m state args dispatchFrame
                             softAssert (LanguagePrimitives.PhysicalEquality resultState.Parent state.Parent) "Can't change parent by interpreting"
                             let resultState = { resultState with Stack = List.append resultState.Stack savedStack }
                             match returnI with
@@ -464,7 +441,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                 |> IArray.ofSeq
             runAndMerge todoFunctions (dispatchFrame [ { frameInfo with CurrentInstruction = i; BranchingFactor = todoFunctions.Length } ])
 
-    let instructions = method.Body.Instructions
+    let instructions = methodDef.Body.Instructions
 
     // printfn "interpreting method %s" (method.FullName)
     // instructions |> Seq.iter (printfn "\t%O")

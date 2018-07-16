@@ -1,6 +1,8 @@
 module UtilityTests
 open Xunit
 open Cisint.Tests.TestInputs
+open Mono.Cecil
+open Mono.Cecil.Cil
 
 [<Fact>]
 let ``init IArray`` () =
@@ -22,6 +24,37 @@ let ``Mono.Cecil inheritance`` () =
                 "T2 method: System.Int32 Cisint.Tests.TestInputs.TestC2::Cisint-Tests-TestInputs-TestI-M()"
             ]
     )
+
+[<Fact>]
+let ``Mono.Cecil generics`` () =
+    let t1 = CecilTools.convertType typeof<GenericType<string>>
+    let method1 = t1.Definition.Methods |> Seq.find (fun m -> m.Name = "Contains")
+    Assert.Equal("System.Boolean Cisint.Tests.TestInputs.GenericType`1::Contains(x)", method1.FullName)
+    Assert.True(method1.ContainsGenericParameter)
+    Assert.Equal(MethodCallingConvention.Default, method1.CallingConvention)
+    Assert.False(method1.HasGenericParameters)
+    Assert.Equal(0, method1.GenericParameters.Count)
+    Assert.False(method1.IsVirtual)
+
+    let method2 = t1.Definition.Methods |> Seq.find (fun m -> m.Name = "DoNothing")
+    Assert.Equal("a Cisint.Tests.TestInputs.GenericType`1::DoNothing(a)", method2.FullName)
+    Assert.True(method2.ContainsGenericParameter)
+    Assert.Equal(MethodCallingConvention.Generic, method2.CallingConvention)
+    Assert.True(method2.HasGenericParameters)
+    Assert.Equal(1, method2.GenericParameters.Count)
+    Assert.Equal("a", method2.GenericParameters.[0].FullName)
+    Assert.True(method2.GenericParameters.[0].IsGenericParameter)
+    Assert.False(method2.IsVirtual)
+
+    let method3 = t1.Definition.Methods |> Seq.find (fun m -> m.Name = "ProcWithNothing")
+    let callInstruction = method3.Body.Instructions |> Seq.find (fun i -> i.OpCode.OperandType = OperandType.InlineMethod)
+    let calledMethod = callInstruction.Operand :?> MethodReference
+    let calledMethodResolved = calledMethod.ResolvePreserve()
+    Assert.Equal("!!0 Cisint.Tests.TestInputs.GenericType`1<x>::DoNothing<x>(!!0)", calledMethod.FullName)
+    Assert.False(calledMethod.HasGenericParameters)
+    Assert.Equal("!!0 Cisint.Tests.TestInputs.GenericType`1<x>::DoNothing<x>(!!0)", calledMethodResolved.FullName)
+    Assert.True(calledMethodResolved.DeclaringType.GetElementType().IsDefinition)
+    Assert.False(calledMethod.HasGenericParameters)
 
 [<Fact>]
 let ``array forall`` () =

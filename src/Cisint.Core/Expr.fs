@@ -113,8 +113,8 @@ with
         let node = LValue (LdElement (target, index))
         SExpr.New (TypeRef (target.ResultType.Reference.GetElementType())) node
      static member Condition cond ifTrue ifFalse =
-        assert (ifTrue.ResultType = ifFalse.ResultType)
-        assert (cond.ResultType.Reference.MetadataType = Mono.Cecil.MetadataType.Boolean)
+        softAssert (ifTrue.ResultType = ifFalse.ResultType) "condition branches must have the same type"
+        softAssert (cond.ResultType.Reference.MetadataType = Mono.Cecil.MetadataType.Boolean) "condition must be boolean"
         let node = Condition (cond, ifTrue, ifFalse)
         SExpr.New ifTrue.ResultType node
      static member ImmConstant<'a> (value: 'a) =
@@ -150,8 +150,8 @@ with
                 if Object.ReferenceEquals(e, expr) then
                     None
                 else
-                assert (e.NodeCountRank > 0)
-                assert (e.NodeLeavesRank >= 0)
+                softAssert (e.NodeCountRank > 0) "NodeCountRank > 0"
+                softAssert (e.NodeLeavesRank >= 0) "NodeLeavesRank >= 0"
                 nodeCounter <- nodeCounter + e.NodeCountRank
                 leavesCounter <- leavesCounter + (
                     if e.NodeLeavesRank > 0 then e.NodeLeavesRank else 1)

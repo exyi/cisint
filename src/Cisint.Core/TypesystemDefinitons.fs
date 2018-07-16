@@ -3,7 +3,19 @@ open System
 open Mono.Cecil
 
 type TypeRef (cecilReference: TypeReference) =
-    let hashCode = cecilReference.ToString().GetHashCode()
+    let cecilReference =
+        // strip the modifiers
+        match cecilReference with
+        | :? RequiredModifierType as c -> c.ElementType
+        | :? OptionalModifierType as c -> c.ElementType
+        | _ -> cecilReference
+    let hashCode =
+        if cecilReference :? GenericParameter then
+            let k = cecilReference :?> GenericParameter
+            (k.Type, k.Position, 633567).GetHashCode()
+        else
+            cecilReference.ToString().GetHashCode()
+
     let cecilDefintion = lazy (cecilReference.Resolve())
 
 
@@ -42,7 +54,7 @@ type TypeRef (cecilReference: TypeReference) =
             Seq.map2 (TypeRef.AreSameTypes) a.GenericArguments b.GenericArguments |> Seq.forall id
 
     static member AreSameGenericParams (a: GenericParameter) (b: GenericParameter) =
-        a.Position = b.Position
+        a.Position = b.Position && a.Type = b.Type
 
     static member AreSameTypes (a: TypeReference) (b: TypeReference) =
         if Object.ReferenceEquals (a, b) then
@@ -68,7 +80,9 @@ type TypeRef (cecilReference: TypeReference) =
         else TypeRef.AreSameTypes a.DeclaringType b.DeclaringType
 
 
-    member _x.Definition = cecilDefintion.Value
+    member _x.Definition =
+        softAssert (cecilDefintion.Value <> null) <| sprintf "Can't resolve type %O" cecilReference
+        cecilDefintion.Value
     member _x.HasDefinition = cecilDefintion.Value |> isNull |> not
     member _x.Reference = cecilReference
     member _x.Name = cecilReference.Name
@@ -80,6 +94,8 @@ type TypeRef (cecilReference: TypeReference) =
             [x]
         else
             x :: (TypeRef cecilDefintion.Value.BaseType).BaseTypeChain
+    member x.Interfaces =
+        cecilDefintion.Value.Interfaces |> IArray.ofSeq |> IArray.map (fun t -> TypeRef t.InterfaceType)
 
     override x.Equals(o) =
         match o with
@@ -95,20 +111,44 @@ type TypeRef (cecilReference: TypeReference) =
     new(td: TypeDefinition) =
         TypeRef(td :> TypeReference)
 
+// returns assignment of generic parameters - type parameter * argument
+let private getGenericAssignment (methodDef: MethodDefinition) (methodRef: MethodReference) =
+    if not methodDef.ContainsGenericParameter then seq []
+    else
+    let m =
+        match methodRef with
+        | :? GenericInstanceMethod as methodRef -> Seq.zip methodDef.GenericParameters methodRef.GenericArguments
+        | _ -> seq []
+    let t =
+        match methodRef.DeclaringType with
+        | :? GenericInstanceType as d -> Seq.zip methodDef.DeclaringType.GenericParameters d.GenericArguments
+        | _ -> seq []
+    Seq.append m t
+let private createGenericParameterAssigner (values: seq<GenericParameter * TypeReference>) =
+    let m = Linq.Enumerable.ToDictionary(values, (fun (a, _) -> TypeRef a), (fun (_, b) -> b))
+    fun (x: TypeReference) ->
+             match m.TryGetValue (TypeRef x) with
+             | (true, a) -> Some a
+             | (false, _) -> None
+
 type MethodRef(cecilReference: MethodReference) =
     let hashCode = cecilReference.ToString().GetHashCode()
     let cecilDefintion = lazy (cecilReference.Resolve())
 
-    member _x.Definition = cecilDefintion.Value
+    member _x.Definition =
+        softAssert (cecilDefintion.Value <> null) <| sprintf "Can't resolve method %O" cecilReference
+        cecilDefintion.Value
     member _x.Reference = cecilReference
     member _x.ReturnType = TypeRef(cecilReference.ReturnType)
     member _x.DeclaringType = TypeRef(cecilReference.DeclaringType)
     member x.ParameterTypes =
-        let p = cecilReference.Parameters |> Seq.map (fun p -> TypeRef p.ParameterType)
+                                                                                     // v For some reason the parameters are not assigned in a reference
+        let p = cecilReference.Parameters |> Seq.map (fun p -> TypeRef (p.ParameterType.ResolvePreserve x.GenericParameterAssigner))
         if cecilReference.HasThis then
-            Seq.append [ x.DeclaringType ] p |> IArray.ofSeq
+            Seq.append [ (if x.DeclaringType.Reference.IsValueType then TypeRef (Mono.Cecil.ByReferenceType(x.Reference.DeclaringType)) else x.DeclaringType) ] p |> IArray.ofSeq
         else
             p |> IArray.ofSeq
+    member x.GenericParameterAssigner = createGenericParameterAssigner (getGenericAssignment x.Definition cecilReference)
 
     static member AreSameMethods (a: MethodReference) (b: MethodReference) =
         if Object.ReferenceEquals(a, b) then
@@ -136,7 +176,9 @@ type FieldRef(cecilReference: FieldReference) =
     let hashCode = cecilReference.ToString().GetHashCode()
     let cecilDefintion = lazy (cecilReference.Resolve())
 
-    member _x.Definition = cecilDefintion.Value
+    member _x.Definition =
+        softAssert (cecilDefintion.Value <> null) <| sprintf "Can't resolve field %O" cecilReference
+        cecilDefintion.Value
     member _x.Reference = cecilReference
     member _x.Name = cecilReference.Name
     member _x.FieldType = TypeRef(cecilReference.FieldType)

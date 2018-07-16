@@ -9,6 +9,7 @@ open InterpreterState
 open Cisint.Tests.TestInputs
 open FSharp.Control.Tasks.V2
 open TypesystemDefinitions
+open StateProcessing
 let testMethod =
     let t = (CecilTools.convertType typeof<Something>)
     fun name -> t.Definition.Methods |> Seq.find (fun m -> m.Name = name) |> MethodRef
@@ -20,7 +21,10 @@ printfn "Current directory is %s" (IO.Directory.GetCurrentDirectory())
 
 let interpretMethod method name state args =
     task {
-        let! result = Interpreter.interpretMethod (testMethod method) state args dispatcher
+        let methodRef = (testMethod method)
+        let! result = Interpreter.interpretMethod methodRef state args dispatcher
+        // waitForDebug()
+        let result = { result with Stack = List.map (fun a -> stackConvert a methodRef.ReturnType |> ExprSimplifier.simplify (AssumptionSet.add [SExpr.ImmConstant true] state.Assumptions)) result.Stack }
         let stateDump = ExprFormat.dumpState result
         IO.Directory.CreateDirectory "state_dump" |> ignore
         IO.File.WriteAllText("state_dump/" + method,
@@ -83,9 +87,18 @@ let ``Simple heap operations - CreateSomeObject`` () = task {
 
 [<Fact>]
 let ``Simple heap operations - CreateAndUseTheObject`` () = task {
-    // waitForDebug()
     let paramX = SParameter.New (CecilTools.intType) "x"
     let! result1, formatted = interpretMethod "CreateAndUseTheObject" "general" state [ SExpr.Parameter paramX ]
     // let! result2 = Interpreter.interpretMethod method state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
+    ()
+}
+
+[<Fact>]
+let ``Simple generic test - UseSomeGenerics`` () = task {
+    let paramA = SParameter.New (CecilTools.convertType typeof<string>) "a"
+    let paramB = SParameter.New (CecilTools.convertType typeof<string>) "b"
+    let! result1, formatted = interpretMethod "UseSomeGenerics" "general" state [ SExpr.Parameter paramA; SExpr.Parameter paramB ]
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
     ()
 }
