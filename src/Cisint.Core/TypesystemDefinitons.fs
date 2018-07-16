@@ -2,6 +2,29 @@ module TypesystemDefinitions
 open System
 open Mono.Cecil
 
+// returns assignment of generic parameters - type parameter * argument
+let private getGenericAssignment_type (typeDef: TypeDefinition) (typeRef: TypeReference) =
+    match typeRef with
+    | :? GenericInstanceType as d -> Seq.zip typeDef.GenericParameters d.GenericArguments
+    | _ -> seq []
+let private getGenericAssignment_method (methodDef: MethodDefinition) (methodRef: MethodReference) =
+    if not methodDef.ContainsGenericParameter then seq []
+    else
+    let m =
+        match methodRef with
+        | :? GenericInstanceMethod as methodRef -> Seq.zip methodDef.GenericParameters methodRef.GenericArguments
+        | _ -> seq []
+    Seq.append m (getGenericAssignment_type methodDef.DeclaringType methodRef.DeclaringType)
+let private createGenericParameterAssigner (values: seq<GenericParameter * TypeReference>) =
+    let m = Linq.Enumerable.ToDictionary(values, (fun (a, _) -> (a.Position, a.Type)), (fun (_, b) -> b))
+    fun (x: TypeReference) ->
+             match x with
+             | :? GenericParameter as x ->
+                 match m.TryGetValue ((x.Position, x.Type)) with
+                 | (true, a) -> Some a
+                 | (false, _) -> None
+             | _ -> None
+
 type TypeRef (cecilReference: TypeReference) =
     let cecilReference =
         // strip the modifiers
@@ -89,13 +112,30 @@ type TypeRef (cecilReference: TypeReference) =
     member _x.FullName = cecilReference.FullName
     member _x.IsPrimitive = cecilReference.IsPrimitive
     member _x.IsObjectReference = not cecilReference.IsValueType && not cecilReference.IsPointer && not cecilReference.IsByReference
-    member x.BaseTypeChain =
-        if isNull cecilDefintion.Value || isNull cecilDefintion.Value.BaseType then
-            [x]
+    member x.BaseType =
+        if not x.HasDefinition || isNull x.Definition.BaseType then
+            None
+        elif cecilReference.IsGenericInstance then
+            TypeRef (x.Definition.BaseType.ResolvePreserve x.GenericParameterAssigner) |> Some
         else
-            x :: (TypeRef cecilDefintion.Value.BaseType).BaseTypeChain
+            TypeRef x.Definition.BaseType |> Some
+    member x.BaseTypeChain =
+        match x.BaseType with
+        | Some bt ->
+            x :: bt.BaseTypeChain
+        | None -> [x]
     member x.Interfaces =
-        cecilDefintion.Value.Interfaces |> IArray.ofSeq |> IArray.map (fun t -> TypeRef t.InterfaceType)
+        cecilDefintion.Value.Interfaces |> IArray.ofSeq |> IArray.map (fun t -> TypeRef (t.InterfaceType.ResolvePreserve x.GenericParameterAssigner))
+    member x.GenericParameterAssigner = createGenericParameterAssigner (getGenericAssignment_type x.Definition cecilReference)
+    /// Gets all fields with instantiated generic arguments, including base types
+    member x.Fields =
+        (match x.BaseType with
+         | Some a -> IArray.append x.LocalFields a.Fields
+         | None -> x.LocalFields)
+    member private x.LocalFields : FieldRef array =
+        // if not cecilReference.IsGenericInstance then IArray.ofSeq x.Definition.Fields |> IArray.map (FieldRef)
+        // else
+        IArray.ofSeq x.Definition.Fields |> IArray.map (fun f -> f.RebaseOn cecilReference |> FieldRef)
 
     override x.Equals(o) =
         match o with
@@ -111,27 +151,7 @@ type TypeRef (cecilReference: TypeReference) =
     new(td: TypeDefinition) =
         TypeRef(td :> TypeReference)
 
-// returns assignment of generic parameters - type parameter * argument
-let private getGenericAssignment (methodDef: MethodDefinition) (methodRef: MethodReference) =
-    if not methodDef.ContainsGenericParameter then seq []
-    else
-    let m =
-        match methodRef with
-        | :? GenericInstanceMethod as methodRef -> Seq.zip methodDef.GenericParameters methodRef.GenericArguments
-        | _ -> seq []
-    let t =
-        match methodRef.DeclaringType with
-        | :? GenericInstanceType as d -> Seq.zip methodDef.DeclaringType.GenericParameters d.GenericArguments
-        | _ -> seq []
-    Seq.append m t
-let private createGenericParameterAssigner (values: seq<GenericParameter * TypeReference>) =
-    let m = Linq.Enumerable.ToDictionary(values, (fun (a, _) -> TypeRef a), (fun (_, b) -> b))
-    fun (x: TypeReference) ->
-             match m.TryGetValue (TypeRef x) with
-             | (true, a) -> Some a
-             | (false, _) -> None
-
-type MethodRef(cecilReference: MethodReference) =
+and MethodRef(cecilReference: MethodReference) =
     let hashCode = cecilReference.ToString().GetHashCode()
     let cecilDefintion = lazy (cecilReference.Resolve())
 
@@ -148,7 +168,7 @@ type MethodRef(cecilReference: MethodReference) =
             Seq.append [ (if x.DeclaringType.Reference.IsValueType then TypeRef (Mono.Cecil.ByReferenceType(x.Reference.DeclaringType)) else x.DeclaringType) ] p |> IArray.ofSeq
         else
             p |> IArray.ofSeq
-    member x.GenericParameterAssigner = createGenericParameterAssigner (getGenericAssignment x.Definition cecilReference)
+    member x.GenericParameterAssigner = createGenericParameterAssigner (getGenericAssignment_method x.Definition cecilReference)
 
     static member AreSameMethods (a: MethodReference) (b: MethodReference) =
         if Object.ReferenceEquals(a, b) then
@@ -172,7 +192,7 @@ type MethodRef(cecilReference: MethodReference) =
     new(td: MethodDefinition) =
         MethodRef(td :> MethodReference)
 
-type FieldRef(cecilReference: FieldReference) =
+and FieldRef(cecilReference: FieldReference) =
     let hashCode = cecilReference.ToString().GetHashCode()
     let cecilDefintion = lazy (cecilReference.Resolve())
 

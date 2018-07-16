@@ -69,7 +69,9 @@ module IArray =
         while i < array.Length && fn array.[i] do
             i <- i + 1
         i = array.Length
-    let ofSeq (a: #seq<'a>) = ImmutableArray.CreateRange a
+    let append (a: 'a array) (b: 'a array) =
+        a.AddRange(b)
+    let ofSeq (a: seq<'a>) = ImmutableArray.CreateRange a
 
 type ImmutableDictionary<'key, 'value> with
     member x.TryGet key =
@@ -163,12 +165,28 @@ type MethodReference with
                 newMethod.ExplicitThis <- x.ExplicitThis
                 newMethod
 
+    member x.RebaseOn(t: TypeReference): MethodReference =
+        if t = x.DeclaringType then
+            x
+        else
+        let newMethod = Mono.Cecil.MethodReference(x.Name, x.ReturnType, t)
+        newMethod.MetadataToken <- x.MetadataToken
+        x.Parameters |> Seq.iter newMethod.Parameters.Add
+        x.GenericParameters |> Seq.iter newMethod.GenericParameters.Add
+        newMethod.HasThis <- x.HasThis
+        newMethod.ExplicitThis <- x.ExplicitThis
+        newMethod
+
 type FieldReference with
     member x.ResolvePreserve () = x.ResolvePreserve(fun _ -> None)
     member x.ResolvePreserve (customMapping) : FieldReference =
         let declaringType = x.DeclaringType.ResolvePreserve(customMapping)
-        if declaringType.IsDefinition then
-            x.Resolve() :> FieldReference
+        x.RebaseOn(declaringType)
+
+    member x.RebaseOn(t: TypeReference): FieldReference =
+        if t = x.DeclaringType then
+            x
         else
-            let newField = new Mono.Cecil.FieldReference(x.Name, x.FieldType, declaringType)
-            newField
+        let newField = Mono.Cecil.FieldReference(x.Name, x.FieldType, t)
+        newField.MetadataToken <- x.MetadataToken
+        newField

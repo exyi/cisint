@@ -91,7 +91,7 @@ let getObjectsFromExpressions (atState: AssumptionSet) (expressions: #seq<SExpr>
     let markAsTodoExpression (expr: SExpr) =
         expr |> SExpr.Visitor (fun a _ ->
             match a.Node with
-            | SExprNode.LValue (SLExprNode.Parameter x) ->
+            | SExprNode.LValue (SLExprNode.Parameter x) | SExprNode.Reference (SLExprNode.Parameter x) ->
                 if not (hashSet.Contains x) && atState.Heap.ContainsKey x then
                     hashSet.Add x |> ignore
                     resultObjects.Add x
@@ -101,12 +101,12 @@ let getObjectsFromExpressions (atState: AssumptionSet) (expressions: #seq<SExpr>
     Seq.iter markAsTodoExpression expressions
     resultObjects
 
-let rec private enumerateFields (t: TypeRef) =
-    seq {
-        yield! t.Definition.Fields
-        if t.Definition.BaseType <> null then
-            yield! enumerateFields (TypeRef t.Definition.BaseType)
-    }
+// let rec private enumerateFields (t: TypeRef) =
+//     seq {
+//         yield! t.Definition.Fields
+//         if t.Definition.BaseType <> null then
+//             yield! enumerateFields (TypeRef t.Definition.BaseType)
+//     }
 let mutable private valueTypeCounter = 0L
 let rec createDefaultValue (t: TypeRef) =
     if t.IsPrimitive then
@@ -123,9 +123,8 @@ let rec createDefaultValue (t: TypeRef) =
 
 and initHeapObject (t: TypeRef) definiteType =
     let fieldsWithObjects =
-        enumerateFields t
-        |> Seq.filter (fun f -> not f.IsStatic)
-        |> Seq.map FieldRef
+        t.Fields
+        |> Seq.filter (fun f -> not f.Definition.IsStatic)
         |> Seq.map (fun f ->
             softAssert (not t.Reference.IsValueType || f.FieldType <> t) "Value type can't contain field of itself"
             let value, heapObjects = createDefaultValue f.FieldType
@@ -245,10 +244,12 @@ let rec findOverridenMethod (t: TypeRef) (m: MethodRef) =
     if TypeRef(m.Reference.DeclaringType) = t then
         m
     else
+        let genericResolver = if t.Reference.ContainsGenericParameter then (fun (mm: Mono.Cecil.MethodReference) -> mm.RebaseOn(t.Reference).ResolvePreserve(t.GenericParameterAssigner).ResolvePreserve(m.GenericParameterAssigner)) else id
         let methods = t.Definition.Methods
-        let explicitOverride = methods |> Seq.tryFind (fun m2 -> m2.Overrides |> Seq.exists (fun ovr -> MethodRef.AreSameMethods ovr m.Reference))
-        let matchedOverride () = methods |> Seq.tryFind (fun m2 -> m2.Name = m.Reference.Name && (m2.Parameters |> Seq.map (fun p -> TypeRef p.ParameterType) |> Seq.toList) = (m.Definition.Parameters |> Seq.map (fun p -> TypeRef p.ParameterType) |> Seq.toList))
-        explicitOverride |> Option.orElseWith matchedOverride |> Option.map MethodRef |> Option.defaultWith (fun () -> findOverridenMethod (TypeRef t.Definition.BaseType) m)
+        let explicitOverride = methods |> Seq.tryFind (fun m2 ->
+            m2.Overrides |> Seq.exists (fun ovr -> MethodRef.AreSameMethods (genericResolver ovr) m.Reference))
+        let matchedOverride () = methods |> Seq.tryFind (fun m2 -> m2.Name = m.Reference.Name && ((genericResolver m2 |> MethodRef).ParameterTypes |> Seq.toList) = (m.ParameterTypes |> Seq.toList))
+        explicitOverride |> Option.orElseWith matchedOverride |> Option.map MethodRef |> Option.defaultWith (fun () -> findOverridenMethod t.BaseType.Value m)
 
 /// Returns devirtualization info - list of (condition, method called, if it's virtual)
 let devirtualize (m: MethodRef) (args: array<SExpr>) state =
@@ -284,8 +285,8 @@ let rec isTypeImmutable (m: TypeRef) =
         true
     else
 
-    let fields = m.Definition.Fields
-    (m.Definition.IsSealed || m.Definition.IsValueType) && fields |> Seq.forall (fun f -> f.IsInitOnly && isTypeImmutable (TypeRef f.FieldType))
+    let fields = m.Fields
+    (m.Definition.IsSealed || m.Definition.IsValueType) && fields |> Seq.forall (fun f -> f.Definition.IsInitOnly && isTypeImmutable f.FieldType)
 
 let getPureMethodSideEffectInfo (m: MethodRef) =
     let argCount = (if m.Reference.HasThis then 1 else 0) + m.Reference.Parameters.Count

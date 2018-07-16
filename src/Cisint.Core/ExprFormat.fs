@@ -137,7 +137,7 @@ let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
                     |> Seq.sortBy (fun (KeyValue (f, _)) -> f.Name)
                     |> Seq.map (fun (KeyValue (field, value)) ->
                         todoObjects.Add value // recurse to objects
-                        let fieldName = if Seq.exists (fun f2 -> FieldRef(f2) = field) heapObj.Type.Definition.Fields then
+                        let fieldName = if heapObj.Type.Fields |> Seq.exists (fun f2 -> f2 = field) then
                                             field.Name
                                         else sprintf "[%O]" field
                         sprintf "%s.%s = %s" o.Name fieldName (exprToString value)
@@ -167,7 +167,7 @@ let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
                         if objectConditionScope.[o] <> conditionScope then
                             endConditionScopeCleanup.Add (o, field)
                         todoObjects.Add value // recurse to objects
-                        let fieldName = if Seq.exists (fun f2 -> FieldRef(f2) = field) heapObj.Type.Definition.Fields then
+                        let fieldName = if Seq.exists (fun f2 -> FieldRef(f2) = field) heapObj.Type.Definition.Fields then // TODO: generic fields
                                             field.Name
                                         else sprintf "[%O]" field
                         sprintf "%s.%s = %s" o.Name fieldName (exprToString value)
@@ -181,6 +181,7 @@ let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
                     if heapObj.IsShared <> SExpr.ImmConstant true then
                         yield! fieldAssignments
                 ]
+        writtenHeapState.[o] <- heapObj
         let printedDependecies = todoObjects |> getObjectsFromExpressions atState |> Seq.collect (printObjectState atState conditionScope)
 
         Seq.append printedDependecies printedObjectInitialization

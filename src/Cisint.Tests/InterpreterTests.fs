@@ -10,6 +10,7 @@ open Cisint.Tests.TestInputs
 open FSharp.Control.Tasks.V2
 open TypesystemDefinitions
 open StateProcessing
+open System.Collections.Generic
 let testMethod =
     let t = (CecilTools.convertType typeof<Something>)
     fun name -> t.Definition.Methods |> Seq.find (fun m -> m.Name = name) |> MethodRef
@@ -100,5 +101,8 @@ let ``Simple generic test - UseSomeGenerics`` () = task {
     let! result1, formatted = interpretMethod "UseSomeGenerics" "general" state [ SExpr.Parameter paramA; SExpr.Parameter paramB ]
     Assert.Equal(0, result1.SideEffects.Count)
     Assert.DoesNotContain(".heapStuff", formatted)
-    ()
+    Assert.Equal(
+        SExpr.ImmConstant true,
+        result1.Stack.Head
+    )
 }
