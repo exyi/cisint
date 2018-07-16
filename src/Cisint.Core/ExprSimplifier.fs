@@ -489,6 +489,28 @@ let defaultPatterns = [
     createPatternFromQuot
         [ typeof<CecilTools.GeneralSentinelType> ]
         [ <@ fun a -> a = a @>; <@ fun _ -> true @> ]
+
+    // basic arithmetics
+    // these should work for floats too
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun a b -> a + b @>; <@ fun a b -> b + a @> ]
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun a b -> a - b @>; <@ fun a b -> a + (-b) @> ]
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun a b -> a * b @>; <@ fun a b -> b * a @> ]
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun a b -> -a + -b @>; <@ fun a b -> -(a + b) @> ]
+    // TODO: this does not work for floats
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun a b c -> a + (b + c) @>; <@ fun a b c -> (a + b) + c @> ]
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun a b c -> a * (b * c) @>; <@ fun a b c -> (a * b) * c @> ]
 ]
 
 let simplify = createSimplifier defaultPatterns
