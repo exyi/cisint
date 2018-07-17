@@ -16,6 +16,15 @@ type GenericType<'x> when 'x : not struct = {
     member x.DoNothing d = d
     member x.ProcWithNothing () = x.DoNothing x.Something
 
+type GenericVirtType<'x>() =
+    abstract member Nothing : 'x -> bool
+    default x.Nothing a = true
+
+type NotSoGenericType() =
+    inherit GenericVirtType<string>()
+    override x.Nothing (a: string) = a.Contains "a"
+
+
 type Something = class
     static member A a b = a ^^^ b
     static member WithCondition a b = if a + 1 > b then a + 1 else b
@@ -49,6 +58,9 @@ type Something = class
     static member UseSomeGenerics (a:string) (b: string) =
         let a = { Something = a }
         a.Contains (a.ProcWithNothing ()) || a.Contains b
+
+    static member CreateSomeGenericBazmek () =
+        NotSoGenericType() :> GenericVirtType<string>
 
 end
 

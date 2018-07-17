@@ -155,15 +155,7 @@ type MethodReference with
             newMethod :> MethodReference
         else
             let declaringType = x.DeclaringType.ResolvePreserve(customMapping)
-            if declaringType.IsDefinition then
-                    x.Resolve() :> MethodReference
-            else
-                let newMethod = new Mono.Cecil.MethodReference(x.Name, x.ReturnType, declaringType)
-                x.Parameters |> Seq.iter newMethod.Parameters.Add
-                x.GenericParameters |> Seq.iter newMethod.GenericParameters.Add
-                newMethod.HasThis <- x.HasThis
-                newMethod.ExplicitThis <- x.ExplicitThis
-                newMethod
+            x.RebaseOn declaringType
 
     member x.RebaseOn(t: TypeReference): MethodReference =
         if t = x.DeclaringType then

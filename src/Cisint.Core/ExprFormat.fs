@@ -58,6 +58,8 @@ let rec exprToString expr =
         sprintf "(%s %s %s)" (exprToString a) op (exprToString b)
     | SExprNode.InstructionCall (InstructionFunction.Not, _, args) -> sprintf "!%s" (args.arr |> Seq.exactlyOne |> exprToString)
     | SExprNode.InstructionCall (InstructionFunction.Negate, _, args) -> sprintf "-%s" (args.arr |> Seq.exactlyOne |> exprToString)
+    | SExprNode.InstructionCall (InstructionFunction.Convert, r, EqArray.AP [ e ]) when r = CecilTools.boolType ->
+        sprintf "bool(%s)" (exprToString e)
     | SExprNode.InstructionCall (instr, t, args) ->
         sprintf "%O<%O>(%s)" instr t (String.Join(", ", args.arr |> Seq.map exprToString))
     | SExprNode.Condition (cond, ifTrue, ifFalse) ->

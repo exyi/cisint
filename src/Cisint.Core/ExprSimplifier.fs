@@ -190,10 +190,23 @@ let assignParameters (mapping: SParameter -> SExpr option) =
 
 /// (from, to) set
 let private lossLessConversions =
-    new HashSet<struct (TypeRef * TypeRef)>([
-        struct (CecilTools.boolType, CecilTools.intType)
-    ])
-let private isDownCast (fromType: TypeRef) (toType: TypeRef) =
+    new HashSet<struct (TypeRef * TypeRef)>(
+        [
+            struct (CecilTools.boolType, CecilTools.intType)
+            struct (CecilTools.convertType typeof<System.Byte>, CecilTools.intType)
+            struct (CecilTools.convertType typeof<System.SByte>, CecilTools.intType)
+            struct (CecilTools.convertType typeof<System.Int16>, CecilTools.intType)
+            struct (CecilTools.convertType typeof<System.UInt16>, CecilTools.intType)
+            struct (CecilTools.convertType typeof<System.UInt32>, CecilTools.intType)
+            struct (CecilTools.intType, CecilTools.convertType typeof<System.UInt32>)
+            struct (CecilTools.convertType typeof<System.UInt64>, CecilTools.convertType typeof<System.Int64>)
+            struct (CecilTools.convertType typeof<System.Int64>, CecilTools.convertType typeof<System.UInt64>)
+            struct (CecilTools.convertType typeof<System.Int16>, CecilTools.convertType typeof<System.UInt16>)
+            struct (CecilTools.convertType typeof<System.UInt16>, CecilTools.convertType typeof<System.Int16>)
+            struct (CecilTools.convertType typeof<System.Byte>, CecilTools.convertType typeof<System.SByte>)
+            struct (CecilTools.convertType typeof<System.SByte>, CecilTools.convertType typeof<System.Byte>)
+        ])
+let isDownCast (fromType: TypeRef) (toType: TypeRef) =
     fromType.BaseTypeChain.Contains toType || toType.Interfaces.Contains toType
 let findCommonAncestor (a: TypeRef) (b: TypeRef) =
     let (cA, cB) = List.rev a.BaseTypeChain, List.rev b.BaseTypeChain
@@ -240,9 +253,12 @@ let private executeConstantInstruction i resultType (args: obj array) =
     | InstructionFunction.Box -> args.[0]
     | InstructionFunction.Convert -> convertTo resultType false args.[0]
     | InstructionFunction.Convert_Checked -> convertTo resultType true args.[0]
-    | InstructionFunction.Cast | InstructionFunction.IsInst when isNull args.[0] -> null
+    | (InstructionFunction.Cast | InstructionFunction.IsInst) when isNull args.[0] -> null
+    | (InstructionFunction.Cast | InstructionFunction.IsInst) when resultType = CecilTools.objType -> args.[0]
+    | (InstructionFunction.Cast | InstructionFunction.IsInst) when isDownCast (args.[0].GetType() |> CecilTools.convertType) resultType -> args.[0]
+    | (InstructionFunction.IsInst) -> null
     | _ ->
-        failwithf "Unsupported constant folding - %O %A" i args
+        failwithf "Unsupported constant folding - %O %A : %O" i args resultType
 
 let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
     match expr.Node with
@@ -288,6 +304,37 @@ let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
             { Node = SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box), _, EqArray.AP [expr2]) } as cast
         ]) when isDownCast expr2.ResultType cast.ResultType ->
         SExpr.InstructionCall InstructionFunction.C_Eq CecilTools.boolType [ SExpr.New expr2.ResultType (SExprNode.Constant null); expr2 ]
+    // null compare -> bool cast
+    | SExprNode.InstructionCall (InstructionFunction.C_Eq, _, EqArray.AP [ { Node = SExprNode.Constant null } as nullLiteral; e ])
+    | SExprNode.InstructionCall (InstructionFunction.C_Eq, _, EqArray.AP [ e; { Node = SExprNode.Constant null } as nullLiteral ]) ->
+        if e.ResultType.Definition.IsValueType then
+            SExpr.ImmConstant false
+        else
+            SExpr.Cast InstructionFunction.Convert CecilTools.boolType e |> SExpr.BoolNot
+    // obj -> bool cast unwrap
+    | SExprNode.InstructionCall (InstructionFunction.Convert, rBool, EqArray.AP [ { Node = SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.Box | InstructionFunction.IsInst), _, EqArray.AP [ e ]) } as cast ]) when rBool = CecilTools.boolType && isDownCast e.ResultType cast.ResultType ->
+        if e.ResultType.Definition.IsValueType then
+            SExpr.ImmConstant true
+        else SExpr.Cast InstructionFunction.Convert CecilTools.boolType e
+    // null check
+    | SExprNode.InstructionCall (InstructionFunction.Convert, rBool, EqArray.AP [ { Node = SExprNode.LValue (SLExprNode.Parameter p) } as pExpr ])
+        when
+            rBool = CecilTools.boolType &&
+                (match assumptions.Heap.TryGet(p) with
+                 | Some (hobj) -> hobj.TypeIsDefinite
+                 | None -> false
+             ) ->
+        SExpr.ImmConstant true
+    | SExprNode.InstructionCall (InstructionFunction.IsInst, resultType, EqArray.AP [ { Node = SExprNode.LValue (SLExprNode.Parameter p) } as pExpr ])
+        when assumptions.Heap.ContainsKey p ->
+        let hobj = assumptions.Heap.[p]
+        if hobj.TypeIsDefinite then
+            // downcast is catched by other pattern
+            SExpr.New resultType (SExprNode.Constant null)
+        elif hobj.Type.BaseType.IsSome && resultType.BaseType.IsSome && not (resultType.BaseTypeChain.Contains hobj.Type) then
+            SExpr.New resultType (SExprNode.Constant null)
+        else
+            expr
     // expression in assumptions is true
     | _ when expr.ResultType = CecilTools.boolType && assumptions.Set.Contains expr -> SExpr.ImmConstant true
     | _ -> expr
@@ -347,18 +394,27 @@ let private execPatterns patternMap expr =
             | _ -> array<_>.Empty
         )
 
+let rec private simplifyHardcodedM (assumptions: AssumptionSet) expr =
+    let expr_t = (simplifyHardcoded assumptions expr)
+    if System.Object.ReferenceEquals(expr_t, expr) || expr_t = expr then
+        expr
+    else simplifyHardcodedM assumptions expr_t
+let rec private simplifyPatternsOneLevel (map: PatternMap) (assumptions: AssumptionSet) expr =
+    let p = execPatterns map expr
+            //|> fun a -> printfn "\t\texecuting patterns for %s, got %d" (ExprFormat.exprToString expr_s) (Seq.length a); a
+            |> Seq.append [expr]
+            |> Seq.reduce (ExprCompare.exprMin)
+    if System.Object.ReferenceEquals(p, expr) || p = expr then
+        expr
+    else simplifyPatternsOneLevel map assumptions p
+
 let private simplifyExpressionCore (map: PatternMap) (assumptions: AssumptionSet) a =
     // printfn "\t simplifying %s" (ExprFormat.exprToString a)
     SExpr.Visitor (fun expr visitChildren ->
         match expr.SimplificationVersion with
         | (AssumptionSetVersion a) when a < assumptions.Version.Num || a = -1L ->
-            let expr_t = (simplifyHardcoded assumptions expr)
-            let expr_s = visitChildren expr_t
-            let p = execPatterns map expr_s
-                    //|> fun a -> printfn "\t\texecuting patterns for %s, got %d" (ExprFormat.exprToString expr_s) (Seq.length a); a
-                    |> Seq.append [expr_s]
-                    |> Seq.reduce (ExprCompare.exprMin)
-            Some p
+            let expr_s = simplifyHardcodedM assumptions expr |> visitChildren |> simplifyHardcodedM assumptions
+            Some (simplifyPatternsOneLevel map assumptions expr_s)
         | _ ->
             Some expr
     ) a

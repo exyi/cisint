@@ -8,8 +8,6 @@ let private getGenericAssignment_type (typeDef: TypeDefinition) (typeRef: TypeRe
     | :? GenericInstanceType as d -> Seq.zip typeDef.GenericParameters d.GenericArguments
     | _ -> seq []
 let private getGenericAssignment_method (methodDef: MethodDefinition) (methodRef: MethodReference) =
-    if not methodDef.ContainsGenericParameter then seq []
-    else
     let m =
         match methodRef with
         | :? GenericInstanceMethod as methodRef -> Seq.zip methodDef.GenericParameters methodRef.GenericArguments
@@ -17,7 +15,8 @@ let private getGenericAssignment_method (methodDef: MethodDefinition) (methodRef
     Seq.append m (getGenericAssignment_type methodDef.DeclaringType methodRef.DeclaringType)
 let private createGenericParameterAssigner (values: seq<GenericParameter * TypeReference>) =
     let m = Linq.Enumerable.ToDictionary(values, (fun (a, _) -> (a.Position, a.Type)), (fun (_, b) -> b))
-    fun (x: TypeReference) ->
+    if m.Count = 0 then fun a -> None
+    else fun (x: TypeReference) ->
              match x with
              | :? GenericParameter as x ->
                  match m.TryGetValue ((x.Position, x.Type)) with

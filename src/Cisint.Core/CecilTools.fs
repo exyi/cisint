@@ -25,6 +25,7 @@ let convertAssembly (assembly: Assembly) =
     (loadModuleCached assembly.Location).Module
 
 let convertType (t: Type) =
+    softAssert (not t.IsConstructedGenericType) "Can't convert generic types"
     let md = convertAssembly t.Assembly
     md.LookupToken(t.MetadataToken) :?> TypeDefinition |> TypeRef
     // TODO: generic types

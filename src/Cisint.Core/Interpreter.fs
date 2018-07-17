@@ -104,9 +104,9 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     let doBranch (stack: SExpr clist) condition =
         let state = { state with Stack = stack }
         let cSimpl = SExpr.InstructionCall InstructionFunction.Convert (CecilTools.boolType) [ condition ] |> ExprSimplifier.simplify state.Assumptions
-        if condition.Node = SExprNode.Constant true then
+        if cSimpl.Node = SExprNode.Constant true then
             InterpretationResult.Branching [{ InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CurrentMethod (instr.Operand :?> Cil.Instruction, false) }]
-        elif condition.Node = SExprNode.Constant false then
+        elif cSimpl.Node = SExprNode.Constant false then
             InterpretationResult.NewState state
         else
             InterpretationResult.Branching [
@@ -202,6 +202,8 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Conv_Ovf_U8_Un then convertChecked typeof<uint64> stackConvertToUnsigned
 
     elif op = OpCodes.Box then proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Box CecilTools.objType [a])
+    elif op = OpCodes.Castclass then waitForDebug(); proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Cast (TypeRef ((instr.Operand :?> TypeReference).ResolvePreserve(genericAssigner))) [a])
+    elif op = OpCodes.Isinst then proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.IsInst (TypeRef ((instr.Operand :?> TypeReference).ResolvePreserve(genericAssigner))) [a])
 
     elif op = OpCodes.Dup then
         pushToStack <| List.head state.Stack
@@ -259,6 +261,8 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
 
     elif op = OpCodes.Call || op = OpCodes.Callvirt then
         let method = (instr.Operand :?> MethodReference).ResolvePreserve genericAssigner
+        softAssert (not method.DeclaringType.ContainsGenericParameter) <| sprintf "%O contains generic parameters in DeclaringType" method
+        // softAssert (not method.ContainsGenericParameter) <| sprintf "%O contains generic parameters" method
         let returnI = if prefixes.Tail then None; else Some instr.Next
         let args, state = state.PopStack (method.Parameters.Count + if method.HasThis then 1 else 0)
         if op = OpCodes.Callvirt && prefixes.Constained.IsSome then
@@ -334,10 +338,10 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Ldflda then
         // the address is simply loaded as an expression. The magic is handled when it's dereferenced
         let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
-        proc1stack (fun e -> SExpr.New field.FieldType (SExprNode.Reference (SLExprNode.LdField (field, Some e))))
+        proc1stack (fun e -> SExpr.New (Mono.Cecil.ByReferenceType(field.FieldType.Reference) |> TypeRef) (SExprNode.Reference (SLExprNode.LdField (field, Some e))))
     elif op = OpCodes.Ldsflda then
         let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
-        pushToStack (SExpr.New field.FieldType (SExprNode.Reference (SLExprNode.LdField (field, None))))
+        pushToStack (SExpr.New (Mono.Cecil.ByReferenceType(field.FieldType.Reference) |> TypeRef) (SExprNode.Reference (SLExprNode.LdField (field, None))))
 
     elif op = OpCodes.Stfld then
         let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
@@ -398,6 +402,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
             | InterpretationResult.NewState state ->
                 interpretBlock noPrefixes i.Next state
             | a -> a
+    let mutable branchCount = 0
     let rec interpretFrom i state cycleDetection =
         let blockResult = interpretBlock noPrefixes i state
         match blockResult with
@@ -411,6 +416,8 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                     assertOrComplicated (not <| List.contains i.Offset cycleDetection) (sprintf "Method contains unbounded cycle in block %O" i)
                     i.Offset :: cycleDetection
                 else cycleDetection
+            branchCount <- branchCount + 1
+            assertOrComplicated (branchCount <= 100) (sprintf "Method branch limit reached")
             if todoItems.Length = 1 then
                 softAssert (todoItems.Head.State.Parent = state.Parent) "Can't fork state to only one branch"
             else
@@ -429,7 +436,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                         let savedStack = state.Stack
                         let state = { state with Stack = [] }
                         let recurse = if virt then interpretVirtualMethod else interpretMethod
-                        let args = IArray.ofSeq (Seq.map2 stackConvert args m.ParameterTypes)
+                        let args = IArray.ofSeq (Seq.map2 stackConvert args m.ParameterTypes) |> IArray.map (ExprSimplifier.simplify state.Assumptions)
                         task {
                             let! resultState = recurse m state args dispatchFrame
                             softAssert (LanguagePrimitives.PhysicalEquality resultState.Parent state.Parent) "Can't change parent by interpreting"

@@ -81,6 +81,8 @@ let rec private accessObjectProperty (fn: SExpr -> SParameter option -> SExpr * 
         accessObjectProperty (fun e -> fn (SExpr.InstructionCall instruction resultType [ e ])) arg
     | SExprNode.PureCall _ ->
         fn expr None
+    | SExprNode.Constant c ->
+        fn expr None
     | e -> failwithf "Can't load field from %A" e
 
 
@@ -229,35 +231,46 @@ let mergeStates a b =
 /// Returns an array of Condition * Result Type tuples, used for devirtualization
 let rec analyseReturnType (expr: SExpr) state =
     if expr.ResultType.IsPrimitive || expr.ResultType.Definition.IsSealed || expr.ResultType.Definition.IsValueType then
-        [ SExpr.ImmConstant true, expr.ResultType ]
+        [ SExpr.ImmConstant true, expr.ResultType, true ]
     else
 
     match expr.Node with
     | SExprNode.LValue (SLExprNode.Parameter a) when state.Assumptions.Heap.ContainsKey a ->
         let hobj = state.Assumptions.Heap.[a]
-        if hobj.TypeIsDefinite then
-            [ SExpr.ImmConstant true, hobj.Type ]
-        else []
-    | SExprNode.Constant _ -> [ SExpr.ImmConstant true, expr.ResultType ]
-    | SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box), _, EqArray.AP [ expr ]) ->
+        [ SExpr.ImmConstant true, hobj.Type, hobj.TypeIsDefinite ]
+    | SExprNode.Constant a -> [ SExpr.ImmConstant true, (if isNull a then expr.ResultType else CecilTools.convertType (a.GetType())), not (isNull a) ]
+    | SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box), castTo, EqArray.AP [ expr ]) ->
         analyseReturnType expr state
+            |> List.map (fun (c, t, d) ->
+                if ExprSimplifier.isDownCast t castTo then
+                    (c, t, d)
+                else (c, castTo, false)
+            )
     | SExprNode.Condition (cond, ifTrue, ifFalse) ->
         List.append
-            (analyseReturnType ifTrue state |> List.map (fun (c, e) -> ExprSimplifier.simplify state.Assumptions (SExpr.BoolAnd cond c), e))
-            (analyseReturnType ifFalse state |> List.map (fun (c, e) -> ExprSimplifier.simplify state.Assumptions (SExpr.BoolAnd (SExpr.BoolNot cond) c), e))
+            (analyseReturnType ifTrue state |> List.map (fun (c, e, d) -> ExprSimplifier.simplify state.Assumptions (SExpr.BoolAnd cond c), e, d))
+            (analyseReturnType ifFalse state |> List.map (fun (c, e, d) -> ExprSimplifier.simplify state.Assumptions (SExpr.BoolAnd (SExpr.BoolNot cond) c), e, d))
     | _ -> []
 
 let rec findOverridenMethod (t: TypeRef) (m: MethodRef) =
     if TypeRef(m.Reference.DeclaringType) = t then
         m
     else
-        let genericResolver = if t.Reference.ContainsGenericParameter then (fun (mm: Mono.Cecil.MethodReference) -> mm.RebaseOn(t.Reference).ResolvePreserve(t.GenericParameterAssigner).ResolvePreserve(m.GenericParameterAssigner)) else id
+        let genericResolver = if t.Reference.IsGenericInstance then (fun (mm: Mono.Cecil.MethodReference) -> mm.RebaseOn(t.Reference).ResolvePreserve(t.GenericParameterAssigner).ResolvePreserve(m.GenericParameterAssigner)) else id
         let methods = t.Definition.Methods
         let explicitOverride = methods |> Seq.tryFind (fun m2 ->
             m2.Overrides |> Seq.exists (fun ovr -> MethodRef.AreSameMethods (genericResolver ovr) m.Reference))
-        let matchedOverride () = methods |> Seq.tryFind (fun m2 -> m2.Name = m.Reference.Name && m.Reference.HasThis && ((genericResolver m2 |> MethodRef).ParameterTypes |> Seq.toList).Tail = (m.ParameterTypes |> Seq.toList).Tail)
-        explicitOverride |> Option.orElseWith matchedOverride |> Option.map MethodRef |> Option.defaultWith (fun () -> findOverridenMethod t.BaseType.Value m)
-
+        let matchedOverride () =
+            methods
+            |> Seq.filter (fun m2 -> m2.Name = m.Reference.Name && m.Reference.HasThis)
+            |> Seq.map (genericResolver >> MethodRef)
+            |> Seq.tryFind (fun m2 -> (m2.ParameterTypes |> Seq.toList).Tail = (m.ParameterTypes |> Seq.toList).Tail)
+        explicitOverride
+            |> Option.map (genericResolver >> MethodRef)
+            |> Option.orElseWith matchedOverride
+            |> Option.defaultWith (fun () ->
+                softAssert t.BaseType.IsSome <| sprintf "Can't find overriden method %O" m
+                findOverridenMethod t.BaseType.Value m)
 /// Returns devirtualization info - list of (condition, method called, if it's virtual)
 let devirtualize (m: MethodRef) (args: array<SExpr>) state =
     if not m.Definition.IsVirtual then
@@ -265,17 +278,9 @@ let devirtualize (m: MethodRef) (args: array<SExpr>) state =
     else
 
     let targetTypes = analyseReturnType args.[0] state
-    let restCondition =
-        targetTypes
-        |> Seq.map fst
-        |> Seq.fold SExpr.BoolOr (SExpr.ImmConstant false)
-        |> SExpr.BoolNot
-        |> ExprSimplifier.simplify state.Assumptions
     [
-        for (condition, t) in targetTypes do
-            yield condition, findOverridenMethod t m, false
-        if restCondition <> SExpr.ImmConstant false then
-            yield restCondition, m, true
+        for (condition, t, v) in targetTypes do
+            yield condition, findOverridenMethod t m, not (v || t.Definition.IsSealed || t.Definition.IsValueType)
     ]
 
 let private immutableTypes =
@@ -359,8 +364,8 @@ let private isCallNonVirtual (m: MethodRef) (args: seq<SExpr>) state =
         Seq.zip args m.Reference.Parameters
         |> Seq.choose (fun (a, p) ->
             let resultTypes = analyseReturnType a state
-            match resultTypes |> Seq.tryFind (fun (c, t) -> t = TypeRef(p.ParameterType)) with
-            | Some (condition_same, _) when condition_same = SExpr.ImmConstant true ->
+            match resultTypes |> Seq.tryFind (fun (c, t, d) -> t = TypeRef(p.ParameterType)) with
+            | Some (condition_same, _, _) when condition_same = SExpr.ImmConstant true ->
                 None
             | _ ->
 
@@ -431,7 +436,11 @@ let accessField target field state =
         | (Some hobj) when hobj.Fields.ContainsKey field ->
             hobj.Fields.[field], (fun _ a -> a)
         | _ ->
-            SExpr.LdField field (Some expr), (fun _ a -> a)
+            match expr.Node with
+            | SExprNode.Constant a when not(isNull a) ->
+                let t = a.GetType().GetField(field.Name, System.Reflection.BindingFlags.Instance ||| System.Reflection.BindingFlags.NonPublic||| System.Reflection.BindingFlags.Public)
+                t.GetValue a |> SExprNode.Constant |> SExpr.New field.FieldType, (fun _ a -> a)
+            | _ -> SExpr.LdField field (Some expr), (fun _ a -> a)
     )
     result, s (SExpr.ImmConstant true) state
 

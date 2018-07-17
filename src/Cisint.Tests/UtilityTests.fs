@@ -27,7 +27,7 @@ let ``Mono.Cecil inheritance`` () =
 
 [<Fact>]
 let ``Mono.Cecil generics`` () =
-    let t1 = CecilTools.convertType typeof<GenericType<string>>
+    let t1 = CecilTools.convertType typedefof<GenericType<_>>
     let method1 = t1.Definition.Methods |> Seq.find (fun m -> m.Name = "Contains")
     Assert.Equal("System.Boolean Cisint.Tests.TestInputs.GenericType`1::Contains(x)", method1.FullName)
     Assert.True(method1.ContainsGenericParameter)

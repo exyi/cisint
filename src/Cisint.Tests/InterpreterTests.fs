@@ -24,7 +24,6 @@ let interpretMethod method name state args =
     task {
         let methodRef = (testMethod method)
         let! result = Interpreter.interpretMethod methodRef state args dispatcher
-        // waitForDebug()
         let result = { result with Stack = List.map (fun a -> stackConvert a methodRef.ReturnType |> ExprSimplifier.simplify (AssumptionSet.add [SExpr.ImmConstant true] state.Assumptions)) result.Stack }
         let stateDump = ExprFormat.dumpState result
         IO.Directory.CreateDirectory "state_dump" |> ignore
@@ -88,6 +87,7 @@ let ``Simple heap operations - CreateSomeObject`` () = task {
 
 [<Fact>]
 let ``Simple heap operations - CreateAndUseTheObject`` () = task {
+    // waitForDebug()
     let paramX = SParameter.New (CecilTools.intType) "x"
     let! result1, formatted = interpretMethod "CreateAndUseTheObject" "general" state [ SExpr.Parameter paramX ]
     // let! result2 = Interpreter.interpretMethod method state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
