@@ -205,6 +205,11 @@ let private lossLessConversions =
             struct (CecilTools.convertType typeof<System.UInt16>, CecilTools.convertType typeof<System.Int16>)
             struct (CecilTools.convertType typeof<System.Byte>, CecilTools.convertType typeof<System.SByte>)
             struct (CecilTools.convertType typeof<System.SByte>, CecilTools.convertType typeof<System.Byte>)
+            struct (CecilTools.intType, CecilTools.nintType)
+            struct (CecilTools.intType, CecilTools.nuintType)
+            struct (CecilTools.nintType, CecilTools.convertType typeof<System.Int64>)
+            struct (CecilTools.nuintType, CecilTools.convertType typeof<System.Int64>)
+            struct (CecilTools.nuintType, CecilTools.convertType typeof<System.UInt64>)
         ])
 let isDownCast (fromType: TypeRef) (toType: TypeRef) =
     fromType.BaseTypeChain.Contains toType || toType.Interfaces.Contains toType

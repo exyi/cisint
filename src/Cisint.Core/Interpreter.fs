@@ -21,6 +21,7 @@ open StateProcessing
 open System.Collections.Generic
 open System.Collections.Generic
 open System.IO
+open System.Collections.Generic
 
 type InterpreterFrameInfo = {
     FrameToken: obj
@@ -67,6 +68,10 @@ let stackArithmeticCoerce a b =
     elif a.ResultType.IsObjectReference && b.ResultType.IsObjectReference then
         let (Some commonCast) = ExprSimplifier.findCommonAncestor a.ResultType b.ResultType
         (SExpr.Cast InstructionFunction.Cast commonCast a, SExpr.Cast InstructionFunction.Cast commonCast b)
+    elif a.ResultType = CecilTools.nintType && b.ResultType = CecilTools.intType then
+        (a, SExpr.Cast InstructionFunction.Convert CecilTools.nintType b)
+    elif a.ResultType = CecilTools.intType && b.ResultType = CecilTools.nintType then
+        (SExpr.Cast InstructionFunction.Convert CecilTools.nintType a, b)
     else
         waitForDebug ()
         failwithf "coertion %O <-> %O not supported (expressions %s, %s)" a.ResultType b.ResultType (ExprFormat.exprToString a) (ExprFormat.exprToString b)
@@ -183,7 +188,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Conv_R8 then convert typeof<System.Double> id
     elif op = OpCodes.Conv_R_Un then convert typeof<System.Double> stackConvertToUnsigned
 
-    elif op = OpCodes.Conv_Ovf_I then convertChecked typeof<int8> id
+    elif op = OpCodes.Conv_Ovf_I1 then convertChecked typeof<int8> id
     elif op = OpCodes.Conv_Ovf_U1 then convertChecked typeof<uint8> id
     elif op = OpCodes.Conv_Ovf_I2 then convertChecked typeof<int16> id
     elif op = OpCodes.Conv_Ovf_U2 then convertChecked typeof<uint16> id
@@ -192,7 +197,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Conv_Ovf_I8 then convertChecked typeof<int64> id
     elif op = OpCodes.Conv_Ovf_U8 then convertChecked typeof<uint64> id
 
-    elif op = OpCodes.Conv_Ovf_I_Un then convertChecked typeof<int8> stackConvertToUnsigned
+    elif op = OpCodes.Conv_Ovf_I1_Un then convertChecked typeof<int8> stackConvertToUnsigned
     elif op = OpCodes.Conv_Ovf_U1_Un then convertChecked typeof<uint8> stackConvertToUnsigned
     elif op = OpCodes.Conv_Ovf_I2_Un then convertChecked typeof<int16> stackConvertToUnsigned
     elif op = OpCodes.Conv_Ovf_U2_Un then convertChecked typeof<uint16> stackConvertToUnsigned
@@ -200,6 +205,14 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Conv_Ovf_U4_Un then convertChecked typeof<uint32> stackConvertToUnsigned
     elif op = OpCodes.Conv_Ovf_I8_Un then convertChecked typeof<int64> stackConvertToUnsigned
     elif op = OpCodes.Conv_Ovf_U8_Un then convertChecked typeof<uint64> stackConvertToUnsigned
+
+    elif op = OpCodes.Conv_I then convert typeof<IntPtr> id
+    elif op = OpCodes.Conv_Ovf_I then convertChecked typeof<IntPtr> id
+    elif op = OpCodes.Conv_Ovf_I_Un then convertChecked typeof<IntPtr> stackConvertToUnsigned
+    elif op = OpCodes.Conv_U then convert typeof<UIntPtr> id
+    elif op = OpCodes.Conv_Ovf_U then convertChecked typeof<UIntPtr> id
+    elif op = OpCodes.Conv_Ovf_U_Un then convertChecked typeof<UIntPtr> stackConvertToUnsigned
+
 
     elif op = OpCodes.Box then proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Box CecilTools.objType [a])
     elif op = OpCodes.Castclass then waitForDebug(); proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Cast (TypeRef ((instr.Operand :?> TypeReference).ResolvePreserve(genericAssigner))) [a])
@@ -217,6 +230,8 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Ldc_I4_4 then pushToStack (SExpr.ImmConstant 4)
     elif op = OpCodes.Ldc_I4_5 then pushToStack (SExpr.ImmConstant 5)
     elif op = OpCodes.Ldc_I4_6 then pushToStack (SExpr.ImmConstant 6)
+    elif op = OpCodes.Ldc_I4_7 then pushToStack (SExpr.ImmConstant 7)
+    elif op = OpCodes.Ldc_I4_8 then pushToStack (SExpr.ImmConstant 8)
     elif op = OpCodes.Ldc_I4_M1 then pushToStack (SExpr.ImmConstant -1)
     elif op = OpCodes.Ldc_I4 || op = OpCodes.Ldc_I4_S then pushToStack (SExpr.ImmConstant (instr.Operand |> Convert.ToInt32))
     elif op = OpCodes.Ldc_I8 then pushToStack (SExpr.ImmConstant (instr.Operand :?> int64))
@@ -309,6 +324,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Ldind_R4 then loadIndirect (Some (CecilTools.convertType typeof<Single>))
     elif op = OpCodes.Ldind_R8 then loadIndirect (Some (CecilTools.convertType typeof<float>))
     elif op = OpCodes.Ldind_Ref then loadIndirect None // may load any reference type
+    elif op = OpCodes.Ldind_I then loadIndirect (Some (CecilTools.nintType))
 
     elif op = OpCodes.Newobj then
         // TODO: Delegates
@@ -327,7 +343,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Ldfld then
         let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
         let [target], state = state.PopStack 1
-        let result, state = accessField target field state
+        let result, state = accessField target (FieldOrElement.FieldRef field) state
         InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
 
     elif op = OpCodes.Ldsfld then
@@ -355,6 +371,42 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         let state = setStaticField field value state
         InterpretationResult.NewState state
 
+    elif op = OpCodes.Newarr then
+        let [len], state = state.PopStack 1
+        let elType = instr.Operand :?> TypeReference |> TypeRef
+        let object, state = newArray (Some len) elType state
+        let objParam = getObjectParam object.Type
+        let state = state.ChangeObject [ objParam, object ]
+        let state = { state with Stack = SExpr.Parameter objParam :: state.Stack }
+        InterpretationResult.NewState state
+
+    elif op = OpCodes.Ldelem_Any ||
+         op = OpCodes.Ldelem_Ref ||
+         op = OpCodes.Ldelem_I ||
+         op = OpCodes.Ldelem_I1 ||
+         op = OpCodes.Ldelem_I2 ||
+         op = OpCodes.Ldelem_I4 ||
+         op = OpCodes.Ldelem_I8 ||
+         op = OpCodes.Ldelem_R4 ||
+         op = OpCodes.Ldelem_R8 ||
+         op = OpCodes.Ldelem_U1 ||
+         op = OpCodes.Ldelem_U2 ||
+         op = OpCodes.Ldelem_U4 then
+         let [target; index], state = state.PopStack 2
+         let e, state = StateProcessing.accessField target (FieldOrElement.ElementRef (index, target.ResultType.Reference.GetElementType() |> TypeRef)) state
+         InterpretationResult.NewState ({state with Stack = stackLoadConvert e :: state.Stack})
+    elif op = OpCodes.Stelem_Any ||
+         op = OpCodes.Stelem_Ref ||
+         op = OpCodes.Stelem_I ||
+         op = OpCodes.Stelem_I1 ||
+         op = OpCodes.Stelem_I2 ||
+         op = OpCodes.Stelem_I4 ||
+         op = OpCodes.Stelem_I8 ||
+         op = OpCodes.Stelem_R4 ||
+         op = OpCodes.Stelem_R8 then
+         let [target; index; value], state = state.PopStack 3
+         let state = StateProcessing.setElement target index value state
+         InterpretationResult.NewState (state)
 
     else tooComplicated <| sprintf "unsupported instruction %O" instr
 

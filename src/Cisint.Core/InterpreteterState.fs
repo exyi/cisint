@@ -2,12 +2,31 @@ module InterpreterState
 open System.Collections.Immutable
 open Expression
 open TypesystemDefinitions
-open Expression
+
+let indexParameter = SParameter.New CecilTools.intType "_index"
+
+let mutable private arrayDefaultCounter = 0L
+type ArrayInfo = {
+    GeneralExpression: SExpr
+    Constants: ImmutableDictionary<int, (SExpr)>
+    Length: SExpr option
+    CurrentVersion: int
+}
+with
+    static member Initialize elementType defaultValue =
+        let p = SParameter.New elementType (sprintf "array_default%d" (System.Threading.Interlocked.Increment(&arrayDefaultCounter)))
+        {
+          GeneralExpression = defaultValue
+          Constants = dict<_, _>.Empty
+          CurrentVersion = 0
+          Length = None
+          }
 
 type HeapObject = {
     Type: TypeRef
     TypeIsDefinite: bool
     Fields: dict<FieldRef, SExpr>
+    Array: ArrayInfo option
     IsShared: SExpr
 }
 
@@ -47,12 +66,22 @@ module AssumptionSet =
         { x with Heap = x.Heap.SetItem(key, fn x.Heap.[key]); Version = nextASVersion () }
 
 
+[<RequireQualifiedAccess>]
+type FieldOrElement =
+    | FieldRef of FieldRef
+    | ElementRef of index: SExpr * resultType: TypeRef
+with
+    member x.ResultType =
+        match x with
+        | FieldRef f -> TypeRef f.Reference.FieldType
+        | ElementRef (_index, resultType) -> resultType
+
 type ConditionalEffect = (SExpr * SideEffect)
 
 and SideEffect =
     | MethodCall of MethodRef * resultValue: SParameter * args: SExpr array * virt: bool * globalEffect: bool * atState: AssumptionSet
-    | FieldWrite of target: SParameter option * FieldRef * value: SExpr * atState: AssumptionSet
-    | FieldRead of target: SParameter option * FieldRef * resultValue: SParameter * atState: AssumptionSet
+    | FieldWrite of target: SParameter option * FieldOrElement * value: SExpr * atState: AssumptionSet
+    | FieldRead of target: SParameter option * FieldOrElement * resultValue: SParameter * atState: AssumptionSet
     | Throw of value: SParameter * atState: AssumptionSet
     | Effects of ConditionalEffect array
 

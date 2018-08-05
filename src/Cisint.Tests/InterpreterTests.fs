@@ -27,7 +27,7 @@ let interpretMethod method name state args =
         let result = { result with Stack = List.map (fun a -> stackConvert a methodRef.ReturnType |> ExprSimplifier.simplify (AssumptionSet.add [SExpr.ImmConstant true] state.Assumptions)) result.Stack }
         let stateDump = ExprFormat.dumpState result
         IO.Directory.CreateDirectory "state_dump" |> ignore
-        IO.File.WriteAllText("state_dump/" + method,
+        IO.File.WriteAllText("state_dump/" + method + "-" + name,
             sprintf "Interpreted method %s (%s) - %s:\n\n%s"  method (String.Join(", ", Seq.map ExprFormat.exprToString args)) name stateDump)
         return result, stateDump
     }
@@ -105,4 +105,24 @@ let ``Simple generic test - UseSomeGenerics`` () = task {
         SExpr.ImmConstant true,
         result1.Stack.Head
     )
+}
+
+
+[<Fact>]
+let ``Simple int array - UseSomeArrays`` () = task {
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let paramB = SParameter.New (CecilTools.convertType typeof<int>) "b"
+    let! result1, formatted = interpretMethod "UseSomeArrays" "general" state [ SExpr.Parameter paramA; SExpr.Parameter paramB ]
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.Equal("if (a = b) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+}
+
+[<Fact>]
+let ``Simple int array constants - UseSomeArrays`` () = task {
+    let paramB = SParameter.New (CecilTools.convertType typeof<int>) "b"
+    let! result1, formatted = interpretMethod "UseSomeArrays" "constant_a" state [ SExpr.ImmConstant 2; SExpr.Parameter paramB ]
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
 }

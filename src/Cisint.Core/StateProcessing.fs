@@ -12,7 +12,7 @@ let stackLoadConvert (expr: SExpr) =
     let t = expr.ResultType
     if not t.IsPrimitive then
         expr
-    elif t.FullName = typeof<int>.FullName || t.FullName = typeof<int64>.FullName || t.FullName = typeof<float>.FullName || t.FullName = typeof<System.UIntPtr>.FullName || t.FullName = typeof<System.IntPtr>.FullName then
+    elif t.FullName = typeof<int>.FullName || t.FullName = typeof<int64>.FullName || t.FullName = typeof<float>.FullName || t.FullName = typeof<System.UIntPtr>.FullName || t.FullName = typeof<System.IntPtr>.FullName || t = CecilTools.nintType || t = CecilTools.nuintType then
         expr
     elif t.FullName = typeof<uint64>.FullName then
         SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<int64>) [ expr ]
@@ -48,6 +48,8 @@ let stackConvertToUnsigned (a: SExpr) =
         SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<uint32>) [a]
     elif a.ResultType.FullName = typeof<int64>.FullName then
         SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<uint64>) [a]
+    elif a.ResultType = CecilTools.nintType then
+        SExpr.InstructionCall InstructionFunction.Convert (CecilTools.nuintType) [a]
     elif a.ResultType.FullName = typeof<float>.FullName then
         a // TODO: float.NaN glitches :(
     elif a.Node = SExprNode.Constant null then
@@ -136,13 +138,15 @@ and initHeapObject (t: TypeRef) definiteType =
       TypeIsDefinite = definiteType
       IsShared = SExpr.ImmConstant false
       Fields = Seq.map fst fieldsWithObjects |> ImmutableDictionary.CreateRange
+      Array = None
     }, Seq.collect snd fieldsWithObjects
 
 let mutable private referenceTypeCounter = 0L
+let getObjectParam t = SParameter.New t (sprintf "o%d" (Threading.Interlocked.Increment(&referenceTypeCounter)))
 
 let createEmptyHeapObject (t: TypeRef) (state: ExecutionState) =
     let object, moreObj = initHeapObject t true
-    let objParam = SParameter.New t (sprintf "o%d" (Threading.Interlocked.Increment(&referenceTypeCounter)))
+    let objParam = getObjectParam t
     // printfn "Adding object %s : %O to %A" objParam.Name objParam.Type (List.ofSeq (state.Assumptions.Heap.Keys |> Seq.map (fun p -> p.Name)))
     let state = state.ChangeObject (Seq.append moreObj [objParam, object])
     objParam, state
@@ -155,6 +159,9 @@ let initLocals (p: #seq<SParameter>) (state: ExecutionState) =
                 )
     let state = state.ChangeObject (Seq.collect snd m)
     { state with Locals = state.Locals.AddRange(Seq.map fst m) }
+
+let mergeArrays a b =
+    failwith "NotSupported"
 
 let mergeStates a b =
     softAssert (a.Parent = b.Parent) "Merged states need to have the same parent"
@@ -178,6 +185,10 @@ let mergeStates a b =
                             if p_b = p_a then KeyValuePair(f, p_a)
                             else KeyValuePair(f, SExpr.Condition condition p_a p_b |> ExprSimplifier.simplify AssumptionSet.empty)
                         ))
+                      Array = match (obj_a.Array, obj_b.Array) with
+                                | (None, None) -> None
+                                | (Some arr_a, Some arr_b) -> Some (mergeArrays arr_a arr_b)
+                                | _ -> softAssert false "Merging array with non-array"; failwith ""
                     }
                 op, combined
             | ((true, o), _) | (_, (true, o)) ->
@@ -384,6 +395,18 @@ let markSideEffectArguments (args: SExpr array) (argInfo: MethodArgumentEffect a
 
     markUsedObjectsShared sharedOnes (SExpr.ImmConstant true) >> markUsedObjectsUnknown mutableOnes
 
+let newArray len (elType: TypeRef) (state: ExecutionState) =
+    let defaultVal, newObjects = createDefaultValue elType
+    let state = state.ChangeObject newObjects
+    let array = { ArrayInfo.Initialize elType defaultVal with Length = len }
+    let heapObj =
+        { HeapObject.Type = TypeRef (new Mono.Cecil.ArrayType(elType.Reference))
+          TypeIsDefinite = true
+          IsShared = SExpr.ImmConstant false
+          Fields = dict<_, _>.Empty
+          Array = Some array
+        }
+    heapObj, state
 
 let mutable private sideEffectCounter = 0L
 let private sideEffectResult t =
@@ -391,11 +414,18 @@ let private sideEffectResult t =
 let private addResultObject (result: SParameter) heapType (isShared: bool) (state: ExecutionState) =
     if result.Type.FullName = "System.Void" then state
     else
+        let array, state =
+            if result.Type.Reference.IsArray then
+                let elType = result.Type.Reference.GetElementType() |> TypeRef
+                let a, state = newArray None elType state
+                a.Array, state
+            else None, state
         state.ChangeObject [
             result, { HeapObject.Type = heapType |> Option.defaultValue result.Type
                       TypeIsDefinite = heapType.IsSome || result.Type.Definition.IsSealed
                       Fields = dict<_, _>.Empty
-                      IsShared = SExpr.ImmConstant isShared } ]
+                      IsShared = SExpr.ImmConstant isShared
+                      Array = array } ]
 
 let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt state =
     let args = IArray.ofSeq args
@@ -414,35 +444,61 @@ let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt st
     let state = addResultObject result seInfo.ActualResultType seInfo.ResultIsShared state
     if result.Type.FullName = "System.Void" then state
     else { state with Stack = stackLoadConvert (SExpr.Parameter result) :: state.Stack }
-let private addFieldReadSideEffect (target: SParameter option) (field: FieldRef) =
-    let result = sideEffectResult (TypeRef field.Reference.FieldType)
+let private addFieldReadSideEffect (target: SParameter option) (field: FieldOrElement) =
+    let result = sideEffectResult field.ResultType
     result, (fun condition state ->
         let effect = SideEffect.FieldRead (target, field, result, state.Assumptions)
         let state = { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
         addResultObject result None true state
     )
-let private addFieldWriteSideEffect (target: SParameter option) (field: FieldRef) (value: SExpr) condition state =
+let private addFieldWriteSideEffect (target: SParameter option) (field: FieldOrElement) (value: SExpr) condition state =
     let effect = SideEffect.FieldWrite (target, field, value, state.Assumptions)
     { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
+
+let private getArrayElement (arrayInfo: ArrayInfo) index =
+    let gExpr = arrayInfo.GeneralExpression
+    let gExpr = lazy ExprSimplifier.assignParameters (fun p -> if p = InterpreterState.indexParameter then Some index else None) gExpr
+    let resultExpr =
+        match index.Node with
+        | SExprNode.Constant c ->
+            arrayInfo.Constants.TryGet(c :?> int) |> Option.defaultWith (fun () -> gExpr.Value)
+        | _ ->
+            let constants = arrayInfo.Constants |> Seq.map (fun a -> a.Key, a.Value)
+            constants
+                |> Seq.fold (fun expr (indexC, value) ->
+                    SExpr.Condition (SExpr.InstructionCall InstructionFunction.C_Eq CecilTools.boolType [ SExpr.ImmConstant indexC; index ]) value expr
+                ) gExpr.Value
+    resultExpr
 
 let accessField target field state =
     let result, s = target |> accessObjectProperty (fun expr objectParam ->
         let hobj = objectParam |> Option.bind (state.Assumptions.Heap.TryGet)
-        match hobj with
-        | (Some hobj) when hobj.IsShared <> SExpr.ImmConstant false ->
+        match hobj, field with
+        | (Some hobj), _ when hobj.IsShared <> SExpr.ImmConstant false ->
             // side effect...
             let result, s = addFieldReadSideEffect objectParam field
             SExpr.Parameter result, s
-        | (Some hobj) when hobj.Fields.ContainsKey field ->
-            hobj.Fields.[field], (fun _ a -> a)
-        | _ ->
+        | (Some hobj), (FieldOrElement.FieldRef field) when hobj.Fields.ContainsKey field ->
+            hobj.Fields.[field], (fun _ -> id)
+        | (Some hobj), (FieldOrElement.ElementRef (index, _returnType)) ->
+            // return expression
+            let array = hobj.Array.Value
+            getArrayElement array index, (fun _ -> id)
+        | _, (FieldOrElement.FieldRef field) ->
             match expr.Node with
             | SExprNode.Constant a when not(isNull a) ->
                 let t = a.GetType().GetField(field.Name, System.Reflection.BindingFlags.Instance ||| System.Reflection.BindingFlags.NonPublic||| System.Reflection.BindingFlags.Public)
                 t.GetValue a |> SExprNode.Constant |> SExpr.New field.FieldType, (fun _ a -> a)
             | _ -> SExpr.LdField field (Some expr), (fun _ a -> a)
+        | _, (FieldOrElement.ElementRef (index, _retType)) ->
+            match expr.Node with
+            // TODO: constant folding with array access
+            // | SExprNode.Constant a when not(isNull a) ->
+            //     let t = a.GetType().GetField(field.Name, System.Reflection.BindingFlags.Instance ||| System.Reflection.BindingFlags.NonPublic||| System.Reflection.BindingFlags.Public)
+            //     t.GetValue a |> SExprNode.Constant |> SExpr.New field.FieldType, (fun _ a -> a)
+            | _ -> SExpr.LdElement expr index, (fun _ a -> a)
     )
-    result, s (SExpr.ImmConstant true) state
+    ExprSimplifier.simplify state.Assumptions result, s (SExpr.ImmConstant true) state
 
 let setField target field value state =
     let _, s = target |> accessObjectProperty (fun expr objectParam ->
@@ -450,7 +506,7 @@ let setField target field value state =
         match hobj with
         | (Some hobj) when hobj.IsShared <> SExpr.ImmConstant false ->
             // side effect...
-            let s = addFieldWriteSideEffect objectParam field value
+            let s = addFieldWriteSideEffect objectParam (FieldOrElement.FieldRef field) value
             expr, s
         | (Some _) ->
             expr, (fun condition state ->
@@ -470,13 +526,56 @@ let setField target field value state =
     )
     s (SExpr.ImmConstant true) state
 
+let setElement target index value state =
+    let _, s = target |> accessObjectProperty (fun expr objectParam ->
+        let hobj = objectParam |> Option.bind (state.Assumptions.Heap.TryGet)
+        match hobj with
+        | (Some hobj) when hobj.IsShared <> SExpr.ImmConstant false ->
+            // side effect...
+            let s = addFieldWriteSideEffect objectParam (FieldOrElement.ElementRef (index, target.ResultType.Reference.GetElementType() |> TypeRef)) value
+            expr, s
+        | (Some _) ->
+            expr, (fun condition state ->
+                let hobj = state.Assumptions.Heap.[objectParam.Value]
+                softAssert hobj.Array.IsSome "Object must be array for indexing"
+                let array = hobj.Array.Value
+                let newValue =
+                    if condition = SExpr.ImmConstant true then
+                        value
+                    else
+                        let currentValue = getArrayElement array index
+                        SExpr.Condition condition value currentValue |> ExprSimplifier.simplify state.Assumptions
+                let newArray =
+                    match index.Node with
+                    | SExprNode.Constant ( :? int as index) ->
+                        { array with Constants = array.Constants.SetItem(index, newValue); CurrentVersion = array.CurrentVersion + 1 }
+                    | _ ->
+                        let gExpr = getArrayElement array (SExpr.Parameter InterpreterState.indexParameter)
+                        { array with
+                            GeneralExpression =
+                                (SExpr.Condition
+                                    (SExpr.InstructionCall InstructionFunction.C_Eq CecilTools.boolType [index; SExpr.Parameter InterpreterState.indexParameter])
+                                    newValue
+                                    gExpr
+                                 |> ExprSimplifier.simplify state.Assumptions)
+                            Constants = dict<_, _>.Empty }
+
+                let hobj = { hobj with Array = Some newArray }
+                state.ChangeObject [ objectParam.Value, hobj ]
+            )
+        | _ ->
+            // TODO: support this - create a new object, assign it to the field and assign a field on the object
+            failwithf "Can't assign to field on non-object, expr = %A, heap objects = %A" hobj (List.ofSeq (state.Assumptions.Heap.Keys |> Seq.map (fun p -> p.Name)))
+    )
+    s (SExpr.ImmConstant true) state
+
 let accessStaticField field state =
     // TODO: immutable static fields
-    let result, s = addFieldReadSideEffect None field
+    let result, s = addFieldReadSideEffect None (FieldOrElement.FieldRef field)
     SExpr.Parameter result, s (SExpr.ImmConstant true) state
 
 let setStaticField field value state =
-    addFieldWriteSideEffect None field value (SExpr.ImmConstant true) state
+    addFieldWriteSideEffect None (FieldOrElement.FieldRef field) value (SExpr.ImmConstant true) state
 
 let readLValue (expr: SLExprNode) (state: ExecutionState) =
     match expr with
@@ -486,7 +585,7 @@ let readLValue (expr: SLExprNode) (state: ExecutionState) =
         else
             failwithf "Can't read LValue parameter %A" p
     | SLExprNode.LdField (field, Some target) ->
-        accessField target field state
+        accessField target (FieldOrElement.FieldRef field) state
     | SLExprNode.LdField (field, None) ->
         accessStaticField field state
     | _ -> failwithf "Can't read LValue, expression of type %O" (expr.GetType())

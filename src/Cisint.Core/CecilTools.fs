@@ -42,4 +42,6 @@ let convertFieldInfo (field: FieldInfo) : FieldRef =
 let boolType = convertType typeof<bool>
 let objType = convertType typeof<obj>
 let intType = convertType typeof<int>
+let nintType = convertType typeof<IntPtr>
+let nuintType = convertType typeof<UIntPtr>
 let generalSentinelType = convertType typeof<GeneralSentinelType>

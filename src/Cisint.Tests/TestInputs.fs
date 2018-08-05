@@ -62,6 +62,11 @@ type Something = class
     static member CreateSomeGenericBazmek () =
         NotSoGenericType() :> GenericVirtType<string>
 
+    static member UseSomeArrays (a: int) (b: int) =
+        let array = [|b; b; b|]
+        array.[a] <- b + 1
+        array.[b] <- 42
+        array.[a]
 end
 
 
