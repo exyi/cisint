@@ -66,7 +66,8 @@ let stackArithmeticCoerce a b =
     if a.ResultType = b.ResultType then
         (a, b)
     elif a.ResultType.IsObjectReference && b.ResultType.IsObjectReference then
-        let (Some commonCast) = ExprSimplifier.findCommonAncestor a.ResultType b.ResultType
+        let commonCast = ExprSimplifier.findCommonAncestor a.ResultType b.ResultType
+                         |> Option.defaultValue CecilTools.objType
         (SExpr.Cast InstructionFunction.Cast commonCast a, SExpr.Cast InstructionFunction.Cast commonCast b)
     elif a.ResultType = CecilTools.nintType && b.ResultType = CecilTools.intType then
         (a, SExpr.Cast InstructionFunction.Convert CecilTools.nintType b)
