@@ -1,5 +1,6 @@
 namespace Cisint.Tests.TestInputs
 
+open Expression
 type TestRecord = {
     SomeProp: int
     AnotherProp: string Option
@@ -67,6 +68,22 @@ type Something = class
         array.[a] <- b + 1
         array.[b] <- 42
         array.[a]
+
+    static member UseEnums (a: int) (b: InstructionFunction) =
+        LanguagePrimitives.EnumToValue b = a ||
+            LanguagePrimitives.EnumToValue b = 3 ||
+            LanguagePrimitives.EnumToValue b = LanguagePrimitives.EnumToValue System.DateTimeKind.Utc ||
+            LanguagePrimitives.EnumOfValue 4 = b ||
+            LanguagePrimitives.EnumOfValue 6432 = b
+
+    static member UseHashTable (a: int) =
+        let h = System.Collections.Generic.Dictionary()
+        h.Add(43, "a")
+        h.Add(76543, "b")
+        h.Add(5355, "c")
+        match h.TryGetValue(a) with
+        | (true, a) -> a
+        | _ -> "lol"
 end
 
 

@@ -11,6 +11,7 @@ open FSharp.Control.Tasks.V2
 open TypesystemDefinitions
 open StateProcessing
 open System.Collections.Generic
+open CecilTools
 let testMethod =
     let t = (CecilTools.convertType typeof<Something>)
     fun name -> t.Definition.Methods |> Seq.find (fun m -> m.Name = name) |> MethodRef
@@ -125,4 +126,22 @@ let ``Simple int array constants - UseSomeArrays`` () = task {
     Assert.Equal(0, result1.SideEffects.Count)
     Assert.DoesNotContain(".heapStuff", formatted)
     Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+}
+
+[<Fact>]
+let ``Simple enum processing - UseEnums`` () = task {
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let paramB = SParameter.New (CecilTools.convertType typeof<InstructionFunction>) "b"
+    let! result1, formatted = interpretMethod "UseEnums" "generic" state [ SExpr.ImmConstant 2; SExpr.Parameter paramB ]
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
+    // Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+}
+
+[<Fact>]
+let ``hash table constant - UseHashTable`` () = task {
+    let! result1, formatted = interpretMethod "UseHashTable" "constant_a" state [ SExpr.ImmConstant 2 ]
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.Equal("\"lol\"", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
 }

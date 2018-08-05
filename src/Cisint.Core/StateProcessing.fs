@@ -6,9 +6,8 @@ open System
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.Diagnostics.Contracts
-
-
-let stackLoadConvert (expr: SExpr) =
+open Mono.Cecil.Rocks
+let rec stackLoadConvert (expr: SExpr) =
     let t = expr.ResultType
     if not t.IsPrimitive then
         expr
@@ -26,6 +25,9 @@ let stackLoadConvert (expr: SExpr) =
             t.FullName = typeof<UInt16>.FullName ||
             t.FullName = typeof<UInt32>.FullName then
         SExpr.InstructionCall InstructionFunction.Convert (CecilTools.convertType typeof<int32>) [ expr ]
+    elif t.BaseType = Some (CecilTools.enumType) then
+        let underlyingType = TypeRef (t.Definition.GetEnumUnderlyingType())
+        stackLoadConvert (SExpr.Cast InstructionFunction.Convert underlyingType expr)
     else
         tooComplicated <| sprintf "unsupported stack load conversion from '%O'." expr.ResultType
 
@@ -33,6 +35,8 @@ let stackConvert (expr: SExpr) (targetType: TypeRef) =
     if expr.ResultType = targetType then expr
     elif expr.ResultType.IsPrimitive && targetType.IsPrimitive then
         SExpr.Cast InstructionFunction.Convert targetType expr
+    elif expr.ResultType.IsPrimitive && targetType.Definition.IsEnum then
+        SExpr.Cast InstructionFunction.Convert targetType (SExpr.Cast InstructionFunction.Convert (targetType.Definition.GetEnumUnderlyingType() |> TypeRef) expr)
     elif expr.ResultType.IsObjectReference && targetType.IsObjectReference &&
          (List.contains targetType expr.ResultType.BaseTypeChain || expr.ResultType.Interfaces.Contains targetType) then
         SExpr.Cast InstructionFunction.Cast targetType expr

@@ -44,4 +44,5 @@ let objType = convertType typeof<obj>
 let intType = convertType typeof<int>
 let nintType = convertType typeof<IntPtr>
 let nuintType = convertType typeof<UIntPtr>
+let enumType = convertType typeof<System.Enum>
 let generalSentinelType = convertType typeof<GeneralSentinelType>

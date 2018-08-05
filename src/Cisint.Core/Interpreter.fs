@@ -16,12 +16,7 @@ open Expression
 open System.Collections.Generic
 open TypesystemDefinitions
 open StateProcessing
-open System.Collections.Generic
-open StateProcessing
-open System.Collections.Generic
-open System.Collections.Generic
-open System.IO
-open System.Collections.Generic
+open Mono.Cecil.Rocks
 
 type InterpreterFrameInfo = {
     FrameToken: obj
@@ -63,6 +58,18 @@ let private runAndMerge todoFunctions dispatchFrame =
     }
 
 let stackArithmeticCoerce a b =
+    if a.ResultType = b.ResultType then
+        (a, b)
+    else
+
+    let unwrapEnum a =
+        if a.ResultType.Definition.IsEnum then
+            SExpr.Cast InstructionFunction.Convert (TypeRef(a.ResultType.Definition.GetEnumUnderlyingType())) a
+        else a
+
+    let a = unwrapEnum a
+    let b = unwrapEnum b
+
     if a.ResultType = b.ResultType then
         (a, b)
     elif a.ResultType.IsObjectReference && b.ResultType.IsObjectReference then
@@ -419,6 +426,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
     assertOrComplicated (not method.HasGenericParameters) "method contains unbound generic parameters"
     assertOrComplicated (methodDef.Body.ExceptionHandlers.Count = 0) "there are exception handlers" // TODO
     softAssert (methodDef.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id) "variable indixes don't fit"
+    softAssert (args |> Seq.zip methodref.ParameterTypes |> Seq.forall (fun (t, a) -> a.ResultType = t)) <| sprintf "Method argument mismatch %O <- %A" methodref (args |> Seq.map (fun a -> a.ResultType) |> Seq.toArray)
 
     let frameInfo = { InterpreterFrameInfo.Method = methodref; Args = args; FrameToken = obj(); CurrentInstruction = null; BranchingFactor = 1 }
 
