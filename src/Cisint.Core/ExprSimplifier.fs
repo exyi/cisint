@@ -601,6 +601,9 @@ let defaultPatterns = [
     createPatternFromQuot
         [ typeof<CecilTools.GeneralSentinelType> ]
         [ <@ fun a -> a = a @>; <@ fun _ -> true @> ]
+    createPatternFromQuot
+        [ typeof<CecilTools.GeneralSentinelType> ]
+        [ <@ fun (a: int) -> a > a @>; <@ fun _ -> false @> ]
 
     // basic arithmetics
     // these should work for floats too

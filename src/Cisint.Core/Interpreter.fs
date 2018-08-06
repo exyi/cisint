@@ -236,6 +236,17 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif (op = OpCodes.Castclass || op = OpCodes.Unbox_Any) && typeOperand.Value.IsObjectReference then
         proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Cast typeOperand.Value [a])
     elif op = OpCodes.Isinst then proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.IsInst typeOperand.Value [a])
+    elif op = OpCodes.Unbox then
+        // take reference to a boxed value
+        proc1stack (fun a ->
+            let a = SExpr.Cast InstructionFunction.Cast typeOperand.Value a |> ExprSimplifier.simplify state.Assumptions
+            makeReference a
+        )
+    elif op = OpCodes.Unbox_Any then
+        // upcast boxed value
+        proc1stack (fun a ->
+            SExpr.Cast InstructionFunction.Cast typeOperand.Value a
+        )
 
     elif op = OpCodes.Dup then
         pushToStack <| List.head state.Stack
