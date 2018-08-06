@@ -11,7 +11,6 @@ open TypesystemDefinitions
 type InstructionFunction =
     | Add = 0
     | And = 1
-    | Box = 2
     | C_Eq = 3
     | C_Gt = 4
     | C_Lt = 5
@@ -93,7 +92,7 @@ with
         let node = InstructionCall (func, resultType, ImmutableArray.CreateRange(args) |> EqArray.New)
         SExpr.New resultType node
      static member Cast func rtype node =
-        if node.ResultType = rtype then node
+        if node.ResultType = rtype && (func <> InstructionFunction.IsInst || rtype.IsObjectReference) then node
         else SExpr.InstructionCall func rtype [ node ]
      static member Parameter p =
         let node = LValue (Parameter p)
@@ -103,6 +102,9 @@ with
         let node = Reference (Parameter p)
         let resType = Mono.Cecil.ByReferenceType(p.Type.Reference) |> TypeRef
         SExpr.New resType node
+     static member Reference (referencedType: TypeRef) lvalue =
+        let t = Mono.Cecil.ByReferenceType(referencedType.Reference) |> TypeRef
+        SExpr.New t (SExprNode.Reference lvalue)
      static member Dereference expr =
         let t = expr.ResultType.Reference :?> Mono.Cecil.ByReferenceType
         SExpr.New (TypeRef t.ElementType) (SExprNode.LValue (SLExprNode.Dereference expr))

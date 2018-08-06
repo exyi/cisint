@@ -17,6 +17,12 @@ type GenericType<'x> when 'x : not struct = {
     member x.DoNothing d = d
     member x.ProcWithNothing () = x.DoNothing x.Something
 
+type GenericUnion<'x> =
+    | One of 'x
+    | Two of 'x * 'x
+with
+    static member Double a = Two(a, a)
+
 type GenericVirtType<'x>() =
     abstract member Nothing : 'x -> bool
     default x.Nothing a = true
@@ -75,6 +81,17 @@ type Something = class
             LanguagePrimitives.EnumToValue b = LanguagePrimitives.EnumToValue System.DateTimeKind.Utc ||
             LanguagePrimitives.EnumOfValue 4 = b ||
             LanguagePrimitives.EnumOfValue 6432 = b
+    static member IntegerVirtualCall (a: int) =
+        let eq = a :> System.IComparable
+        if eq :? System.Collections.IEnumerable then
+            Something.SideEffect1 1 |> ignore
+        if eq :? System.Array then
+            Something.SideEffect1 2 |> ignore
+        eq.CompareTo(box a)
+    static member UseGenericUnion (a: int) =
+        match GenericUnion<int>.Double a with
+        | Two (x, y) as a -> x + y, a.GetHashCode()
+        | One x -> x, 1
 
     static member UseHashTable (a: int) =
         let h = System.Collections.Generic.Dictionary()

@@ -130,9 +130,26 @@ let ``Simple int array constants - UseSomeArrays`` () = task {
 
 [<Fact>]
 let ``Simple enum processing - UseEnums`` () = task {
-    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
     let paramB = SParameter.New (CecilTools.convertType typeof<InstructionFunction>) "b"
-    let! result1, formatted = interpretMethod "UseEnums" "generic" state [ SExpr.ImmConstant 2; SExpr.Parameter paramB ]
+    let! result1, formatted = interpretMethod "UseEnums" "constant_a" state [ SExpr.ImmConstant 2; SExpr.Parameter paramB ]
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
+    // Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+}
+
+[<Fact>]
+let ``Simple devirtualization - IntegerVirtualCall`` () = task {
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let! result1, formatted = interpretMethod "IntegerVirtualCall" "generic" state [ SExpr.Parameter paramA ]
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.Equal("0", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+}
+
+[<Fact>]
+let ``Simple object processing - UseGenericUnion`` () = task {
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let! result1, formatted = interpretMethod "UseGenericUnion" "generic" state [ SExpr.Parameter paramA ]
     Assert.Equal(0, result1.SideEffects.Count)
     Assert.DoesNotContain(".heapStuff", formatted)
     // Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)

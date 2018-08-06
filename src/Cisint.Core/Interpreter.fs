@@ -17,6 +17,8 @@ open System.Collections.Generic
 open TypesystemDefinitions
 open StateProcessing
 open Mono.Cecil.Rocks
+open System.Collections.Generic
+open System.Collections.Generic
 
 type InterpreterFrameInfo = {
     FrameToken: obj
@@ -117,6 +119,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     let doBranch (stack: SExpr clist) condition =
         let state = { state with Stack = stack }
         let cSimpl = SExpr.InstructionCall InstructionFunction.Convert (CecilTools.boolType) [ condition ] |> ExprSimplifier.simplify state.Assumptions
+        printfn "Branching at %O if %s -> %s" instr (ExprFormat.exprToString condition) (ExprFormat.exprToString cSimpl)
         if cSimpl.Node = SExprNode.Constant true then
             InterpretationResult.Branching [{ InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CurrentMethod (instr.Operand :?> Cil.Instruction, false) }]
         elif cSimpl.Node = SExprNode.Constant false then
@@ -145,6 +148,8 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         let result, state = dereference addr state
         if expectedType <> Some result.ResultType && expectedType <> None then failwithf "Can't load dereference to %O, %O was expected" result.ResultType expectedType
         InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
+
+    let typeOperand = lazy TypeRef ((instr.Operand :?> TypeReference).ResolvePreserve(genericAssigner))
 
     let op = instr.OpCode
     // arithmetic instructions:
@@ -222,9 +227,15 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Conv_Ovf_U_Un then convertChecked typeof<UIntPtr> stackConvertToUnsigned
 
 
-    elif op = OpCodes.Box then proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Box CecilTools.objType [a])
-    elif op = OpCodes.Castclass then waitForDebug(); proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Cast (TypeRef ((instr.Operand :?> TypeReference).ResolvePreserve(genericAssigner))) [a])
-    elif op = OpCodes.Isinst then proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.IsInst (TypeRef ((instr.Operand :?> TypeReference).ResolvePreserve(genericAssigner))) [a])
+    elif op = OpCodes.Box then
+        let [value], state = state.PopStack 1
+        assertOrComplicated (not(value.ResultType.FullName.StartsWith "System.Nullable`1")) "Boxing nullable is not supported"
+        let value, state = copyReference value state
+        let value = SExpr.Cast InstructionFunction.Cast CecilTools.objType value
+        InterpretationResult.NewState { state with Stack = value :: state.Stack }
+    elif (op = OpCodes.Castclass || op = OpCodes.Unbox_Any) && typeOperand.Value.IsObjectReference then
+        proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.Cast typeOperand.Value [a])
+    elif op = OpCodes.Isinst then proc1stack (fun a -> SExpr.InstructionCall InstructionFunction.IsInst typeOperand.Value [a])
 
     elif op = OpCodes.Dup then
         pushToStack <| List.head state.Stack
@@ -281,6 +292,8 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         doBranchWithCond OpCodes.Brtrue (Cil.Instruction.Create(OpCodes.Clt_Un))
     elif op = OpCodes.Bne_Un || op = OpCodes.Bne_Un_S then
         doBranchWithCond OpCodes.Brfalse (Cil.Instruction.Create(OpCodes.Ceq))
+    elif op = OpCodes.Pop then
+        InterpretationResult.NewState { state with Stack = List.tail state.Stack }
 
     elif op = OpCodes.Call || op = OpCodes.Callvirt then
         let method = (instr.Operand :?> MethodReference).ResolvePreserve genericAssigner
@@ -295,7 +308,8 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
                 InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (overridenMethod, args, returnI, false) } ]
             else
                 // it's not overriden -> invoke the base implementation with boxing and stuff
-                let args = ((SExpr.InstructionCall InstructionFunction.Box CecilTools.objType [ SExpr.Dereference args.Head ]) :: args.Tail)
+                // it's only used for object.ToString, object.GetHashCode and so on, which don't mutate the object => we can ignore the copyReference
+                let args = ((SExpr.InstructionCall InstructionFunction.Cast CecilTools.objType [ SExpr.Dereference args.Head ]) :: args.Tail)
                 InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, args, returnI, false) } ]
         else
             InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, args, returnI, op = OpCodes.Callvirt) } ]
@@ -433,8 +447,10 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
     // printfn "Interpreting Core %O" methodref
     // method.Body.Instructions |> Seq.iter (printfn "\t%O")
 
-    IO.Directory.CreateDirectory "dasm" |> ignore
-    IO.File.WriteAllLines("dasm/" + methodDef.FullName.Replace("/", "_") + ".il", methodDef.Body.Instructions |> Seq.map (sprintf "\t%O"))
+    try
+        IO.Directory.CreateDirectory "dasm" |> ignore
+        IO.File.WriteAllLines("dasm/" + methodDef.FullName.Replace("/", "_") + ".il", methodDef.Body.Instructions |> Seq.map (sprintf "\t%O"))
+    with _ -> ()
 
     let locals = methodDef.Body.Variables
                  |> Seq.map (fun var -> SParameter.New (TypeRef (var.VariableType.ResolvePreserve genericAssigner)) (sprintf "%s_loc%d" method.Name var.Index))
@@ -484,6 +500,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
             else
                 softAssert (todoItems |> List.forall (fun t -> t.State.Parent.IsSome)) "All state forks need to have a parent"
                 softAssert (todoItems |> List.forall (fun t -> t.State.Parent.Value.Parent = state.Parent)) "All state forks need to be granchild of current parent"
+            // printfn "Branching in %O:" method
             let todoFunctions =
                 todoItems
                 |> Seq.map (fun t () ->
@@ -566,10 +583,15 @@ and interpretVirtualMethod method state args dispatcher =
     let jobs =
         devirtTargets
         |> List.map (fun (condition, method, isVirtual) ->
+            let castTarget expr =
+                let expr = SExpr.Cast InstructionFunction.Cast method.DeclaringType expr |> ExprSimplifier.simplify state.Assumptions
+                if method.DeclaringType.Reference.IsValueType then
+                    StateProcessing.makeReference expr
+                else expr
             let forkedState = if condition = SExpr.ImmConstant true then state
                               else state.WithCondition [condition]
             states.Add forkedState
-            let args = args.SetItem(0, SExpr.Cast InstructionFunction.Cast method.DeclaringType args.[0])
+            let args = args.SetItem(0, castTarget args.[0])
             if isVirtual then
                 // not devirtualizable -> side effect
                 fun () -> addCallSideEffect method (getMethodSideEffectInfo method) args (*virt*)true forkedState |> Task.FromResult

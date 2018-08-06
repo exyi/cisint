@@ -48,7 +48,7 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
                     | "op_Multiply" -> Some InstructionFunction.Mul
                     | "op_Division" -> Some InstructionFunction.Div
                     | "op_Modulus" -> Some InstructionFunction.Rem
-                    | "Box" -> Some InstructionFunction.Box
+                    | "Box" -> Some InstructionFunction.Cast
                     | "Unbox" -> Some InstructionFunction.Unbox
                     | "op_BitwiseAnd" -> Some InstructionFunction.And
                     | "op_BitwiseOr" -> Some InstructionFunction.Or
@@ -63,7 +63,7 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
                     | "UnboxGeneric" -> Some InstructionFunction.Cast
                     | "Not" -> Some InstructionFunction.Not
                     | a when a.StartsWith "To" -> Some InstructionFunction.Convert
-                    | _ -> failwith "nevim jak"
+                    | _ -> failwithf "nevim jak: %O" m
                 elif m.IsGenericMethod && m.GetGenericMethodDefinition() = typeof<Marker>.DeclaringType.GetMethod("castAs") then
                     Some InstructionFunction.IsInst
                 elif m = typeof<Marker>.DeclaringType.GetMethod("justOr") then
@@ -75,6 +75,12 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
             match instuctionFunction with
             | Some i ->
                 SExpr.InstructionCall i (convertType m.ReturnType) (IArray.ofSeq args)
+            | _ when m.DeclaringType.FullName = "Microsoft.FSharp.Core.LanguagePrimitives+IntrinsicFunctions" && m.Name = "TypeTestGeneric" ->
+                let t = m.GetGenericArguments().[0]
+                SExpr.Cast InstructionFunction.Convert CecilTools.boolType (SExpr.Cast InstructionFunction.IsInst (CecilTools.convertType t) (List.exactlyOne args))
+            | _ when m.DeclaringType.FullName = "Microsoft.FSharp.Core.LanguagePrimitives+IntrinsicFunctions" && m.Name = "UnboxGeneric" ->
+                let t = m.GetGenericArguments().[0]
+                SExpr.Cast InstructionFunction.Cast (CecilTools.convertType t) (List.exactlyOne args)
             | _ ->
                 SExpr.PureCall (CecilTools.convertMethodInfo m) (List.append (Option.toList target) args |> IArray.ofSeq)
         | QP.TupleGet (var, index) ->
@@ -212,7 +218,7 @@ let private lossLessConversions =
             struct (CecilTools.nuintType, CecilTools.convertType typeof<System.UInt64>)
         ])
 let isDownCast (fromType: TypeRef) (toType: TypeRef) =
-    fromType.BaseTypeChain.Contains toType || toType.Interfaces.Contains toType
+    fromType.BaseTypeChain.Contains toType || fromType.Interfaces.Contains toType
 let findCommonAncestor (a: TypeRef) (b: TypeRef) =
     let (cA, cB) = List.rev a.BaseTypeChain, List.rev b.BaseTypeChain
     Seq.init (min cA.Length cB.Length) (fun i -> (cA.[i], cB.[i])) |> Seq.tryFindBack (fun (a, b) -> a = b) |> Option.map fst
@@ -255,7 +261,7 @@ let private executeConstantInstruction i resultType (args: obj array) =
     | InstructionFunction.Negate -> Evaluator.Negate(args.[0])
     | InstructionFunction.BitNot -> Evaluator.BitNot(args.[0])
     | InstructionFunction.Not -> box(not(unbox args.[0]))
-    | InstructionFunction.Box -> args.[0]
+    // | InstructionFunction.Box -> args.[0]
     | InstructionFunction.Convert -> convertTo resultType false args.[0]
     | InstructionFunction.Convert_Checked -> convertTo resultType true args.[0]
     | (InstructionFunction.Cast | InstructionFunction.IsInst) when isNull args.[0] -> null
@@ -264,6 +270,30 @@ let private executeConstantInstruction i resultType (args: obj array) =
     | (InstructionFunction.IsInst) -> null
     | _ ->
         failwithf "Unsupported constant folding - %O %A : %O" i args resultType
+
+/// Returns an array of Condition * Result Type tuples, used for devirtualization and type check reduction
+let rec analyseReturnType (expr: SExpr) state =
+    if expr.ResultType.IsPrimitive || expr.ResultType.Definition.IsSealed || expr.ResultType.Definition.IsValueType then
+        [ SExpr.ImmConstant true, expr.ResultType, true ]
+    else
+
+    match expr.Node with
+    | SExprNode.LValue (SLExprNode.Parameter a) when state.Assumptions.Heap.ContainsKey a ->
+        let hobj = state.Assumptions.Heap.[a]
+        [ SExpr.ImmConstant true, hobj.Type, hobj.TypeIsDefinite ]
+    | SExprNode.Constant a -> [ SExpr.ImmConstant true, (if isNull a then expr.ResultType else CecilTools.convertType (a.GetType())), not (isNull a) ]
+    | SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst), castTo, EqArray.AP [ expr ]) ->
+        analyseReturnType expr state
+            |> List.map (fun (c, t, d) ->
+                if d || isDownCast t castTo then
+                    (c, t, d)
+                else (c, castTo, false)
+            )
+    | SExprNode.Condition (cond, ifTrue, ifFalse) ->
+        List.append
+            (analyseReturnType ifTrue state |> List.map (fun (c, e, d) -> (SExpr.BoolAnd cond c), e, d))
+            (analyseReturnType ifFalse state |> List.map (fun (c, e, d) -> (SExpr.BoolAnd (SExpr.BoolNot cond) c), e, d))
+    | _ -> []
 
 let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
     match expr.Node with
@@ -276,24 +306,31 @@ let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
     | SExprNode.InstructionCall (InstructionFunction.Convert, convertTo, EqArray.AP [ { Node = SExprNode.InstructionCall(InstructionFunction.Convert, convertFrom, EqArray.AP [insideExpr]) } as convExpr ])
         when convertTo = insideExpr.ResultType && lossLessConversions.Contains (struct (convertTo, convertFrom)) ->
         SExpr.Cast InstructionFunction.Convert convertTo insideExpr
-    // take only outer conversion
-    | SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box) as ifc, castTo, EqArray.AP [ { Node = SExprNode.InstructionCall((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box), castFrom, EqArray.AP [insideExpr]) } as convExpr ])
-        when isDownCast convExpr.ResultType castFrom || not(isDownCast castFrom castTo) ->
+    // take only outer conversion (insideExpr.ResultType -> castVia -> castTo)
+    | SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst) as ifc, castTo, EqArray.AP [ { Node = SExprNode.InstructionCall((InstructionFunction.Cast | InstructionFunction.IsInst), castVia, EqArray.AP [insideExpr]) } as convExpr ])
+        when isDownCast insideExpr.ResultType castVia ->
         SExpr.Cast ifc castTo insideExpr
     // redundant conversions and casts
-    | SExprNode.InstructionCall ((InstructionFunction.Convert | InstructionFunction.Cast | InstructionFunction.IsInst), convertTo, EqArray.AP [ insideExpr ])
+    | SExprNode.InstructionCall ((InstructionFunction.Convert | InstructionFunction.Cast), convertTo, EqArray.AP [ insideExpr ])
         when insideExpr.ResultType = convertTo ->
+        insideExpr
+    | SExprNode.InstructionCall ((InstructionFunction.IsInst), convertTo, EqArray.AP [ insideExpr ])
+        when insideExpr.ResultType = convertTo && insideExpr.ResultType.IsObjectReference ->
         insideExpr
     // propagate unary expressions into conditionals
     | SExprNode.InstructionCall (ifc, resultType, EqArray.AP [ { Node = SExprNode.Condition (condition, ifTrue, ifFalse) } as _innerNode ]) ->
         SExpr.Condition condition (SExpr.InstructionCall ifc resultType [ifTrue]) (SExpr.InstructionCall ifc resultType [ifFalse])
-    // boxing reference type is like a downcast
-    | SExprNode.InstructionCall (InstructionFunction.Box, resultType, EqArray.AP [ arg ]) when arg.ResultType.IsObjectReference ->
-        softAssert (resultType = CecilTools.objType) "Boxing to non-object type."
-        SExpr.Cast InstructionFunction.Cast resultType arg
     // downcast will always use Cast instruction
     | SExprNode.InstructionCall (InstructionFunction.IsInst, resultType, EqArray.AP [ arg ]) when arg.ResultType.IsObjectReference && isDownCast arg.ResultType resultType ->
         SExpr.Cast InstructionFunction.Cast resultType arg
+    // value-type typecheck
+    | SExprNode.InstructionCall (InstructionFunction.Convert, boolType, EqArray.AP [{ SExpr.Node = SExprNode.InstructionCall (InstructionFunction.IsInst, resultType, EqArray.AP [ arg ]) } as castAsExpr ])
+        when boolType = CecilTools.boolType && arg.ResultType.Reference.IsValueType ->
+        let isDown = isDownCast arg.ResultType resultType
+        if isDown then
+            SExpr.ImmConstant true
+        else
+            SExpr.ImmConstant false
     // reference comparison with conversions
     | SExprNode.InstructionCall (InstructionFunction.C_Eq as ifc, resultType, EqArray.AP [
             { Node = SExprNode.InstructionCall (InstructionFunction.Cast, _, EqArray.AP [expr1]) } as cast1
@@ -306,7 +343,7 @@ let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
     // cast and null compare
     | SExprNode.InstructionCall (InstructionFunction.C_Eq, _, EqArray.AP [
             { Node = SExprNode.Constant null } as nullLiteral
-            { Node = SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box), _, EqArray.AP [expr2]) } as cast
+            { Node = SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst), _, EqArray.AP [expr2]) } as cast
         ]) when isDownCast expr2.ResultType cast.ResultType ->
         SExpr.InstructionCall InstructionFunction.C_Eq CecilTools.boolType [ SExpr.New expr2.ResultType (SExprNode.Constant null); expr2 ]
     // null compare -> bool cast
@@ -317,7 +354,7 @@ let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
         else
             SExpr.Cast InstructionFunction.Convert CecilTools.boolType e |> SExpr.BoolNot
     // obj -> bool cast unwrap
-    | SExprNode.InstructionCall (InstructionFunction.Convert, rBool, EqArray.AP [ { Node = SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.Box | InstructionFunction.IsInst), _, EqArray.AP [ e ]) } as cast ]) when rBool = CecilTools.boolType && isDownCast e.ResultType cast.ResultType ->
+    | SExprNode.InstructionCall (InstructionFunction.Convert, rBool, EqArray.AP [ { Node = SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst), _, EqArray.AP [ e ]) } as cast ]) when rBool = CecilTools.boolType && isDownCast e.ResultType cast.ResultType ->
         if e.ResultType.Definition.IsValueType then
             SExpr.ImmConstant true
         else SExpr.Cast InstructionFunction.Convert CecilTools.boolType e
@@ -330,16 +367,22 @@ let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
                  | None -> false
              ) ->
         SExpr.ImmConstant true
+    // typecheck evaluation, replace upcast by null
     | SExprNode.InstructionCall (InstructionFunction.IsInst, resultType, EqArray.AP [ { Node = SExprNode.LValue (SLExprNode.Parameter p) } as pExpr ])
-        when assumptions.Heap.ContainsKey p ->
+        when assumptions.Heap.ContainsKey p && not (isDownCast pExpr.ResultType resultType) ->
         let hobj = assumptions.Heap.[p]
         if hobj.TypeIsDefinite then
-            // downcast is catched by other pattern
             SExpr.New resultType (SExprNode.Constant null)
         elif hobj.Type.BaseType.IsSome && resultType.BaseType.IsSome && not (resultType.BaseTypeChain.Contains hobj.Type) then
             SExpr.New resultType (SExprNode.Constant null)
         else
             expr
+    | SExprNode.InstructionCall (InstructionFunction.IsInst, resultType, EqArray.AP [ { Node = SExprNode.LValue (SLExprNode.Parameter p) } as pExpr ])
+        when not (isDownCast pExpr.ResultType resultType) && (pExpr.ResultType.IsPrimitive || pExpr.ResultType.Definition.IsSealed || pExpr.ResultType.Definition.IsValueType) ->
+        SExpr.New resultType (SExprNode.Constant null)
+    | SExprNode.InstructionCall (InstructionFunction.IsInst, resultType, EqArray.AP [ { Node = SExprNode.LValue (SLExprNode.Parameter p) } as pExpr ])
+        when pExpr.ResultType.BaseType.IsSome && resultType.BaseType.IsSome && not (resultType.BaseTypeChain.Contains pExpr.ResultType) ->
+        SExpr.New resultType (SExprNode.Constant null)
     // expression in assumptions is true
     | _ when expr.ResultType = CecilTools.boolType && assumptions.Set.Contains expr -> SExpr.ImmConstant true
     | _ -> expr

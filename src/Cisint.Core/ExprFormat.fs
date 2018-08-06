@@ -51,7 +51,6 @@ let rec exprToString expr =
                     | InstructionFunction.IsInst
                     | InstructionFunction.Convert_Checked
                     | InstructionFunction.Convert
-                    | InstructionFunction.Box
                     | InstructionFunction.Unbox
                     | InstructionFunction.Cast -> failwith ""
                     | _ -> failwith ""

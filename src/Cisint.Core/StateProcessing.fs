@@ -38,7 +38,7 @@ let stackConvert (expr: SExpr) (targetType: TypeRef) =
     elif expr.ResultType.IsPrimitive && targetType.Definition.IsEnum then
         SExpr.Cast InstructionFunction.Convert targetType (SExpr.Cast InstructionFunction.Convert (targetType.Definition.GetEnumUnderlyingType() |> TypeRef) expr)
     elif expr.ResultType.IsObjectReference && targetType.IsObjectReference &&
-         (List.contains targetType expr.ResultType.BaseTypeChain || expr.ResultType.Interfaces.Contains targetType) then
+         (List.contains targetType expr.ResultType.BaseTypeChain || expr.ResultType.Interfaces.Contains targetType || targetType = CecilTools.objType) then
         SExpr.Cast InstructionFunction.Cast targetType expr
     elif expr.ResultType.IsObjectReference && targetType.IsObjectReference &&
         expr.Node = SExprNode.Constant null then
@@ -82,14 +82,14 @@ let rec private accessObjectProperty (fn: SExpr -> SParameter option -> SExpr * 
         let ifTrue, s1 = accessObjectProperty fn ifTrue
         let ifFalse, s2 = accessObjectProperty fn ifFalse
         SExpr.Condition cond ifTrue ifFalse, (fun condition -> s1 (SExpr.BoolAnd condition cond) >> s2 (SExpr.BoolAnd condition cond |> SExpr.BoolNot))
-    | SExprNode.InstructionCall (InstructionFunction.Box | InstructionFunction.Cast | InstructionFunction.IsInst as instruction, resultType, EqArray.AP [ arg ]) ->
+    | SExprNode.InstructionCall (InstructionFunction.Cast | InstructionFunction.IsInst as instruction, resultType, EqArray.AP [ arg ]) ->
         // cast instructions
         accessObjectProperty (fun e -> fn (SExpr.InstructionCall instruction resultType [ e ])) arg
     | SExprNode.PureCall _ ->
         fn expr None
     | SExprNode.Constant c ->
         fn expr None
-    | e -> failwithf "Can't load field from %A" e
+    | e -> failwithf "Can't access property at %A" e
 
 
 let getObjectsFromExpressions (atState: AssumptionSet) (expressions: #seq<SExpr>) =
@@ -115,7 +115,9 @@ let getObjectsFromExpressions (atState: AssumptionSet) (expressions: #seq<SExpr>
 //         if t.Definition.BaseType <> null then
 //             yield! enumerateFields (TypeRef t.Definition.BaseType)
 //     }
-let mutable private valueTypeCounter = 0L
+let private createValueTypeParameter =
+    let mutable valueTypeCounter = 0L
+    fun t -> SParameter.New t (sprintf "v%d" (Threading.Interlocked.Increment(&valueTypeCounter)))
 let rec createDefaultValue (t: TypeRef) =
     if t.IsPrimitive then
         // just take default value
@@ -123,7 +125,7 @@ let rec createDefaultValue (t: TypeRef) =
     elif t.Reference.IsValueType then
         // create default object for value type
         let obj1, moreObjs = initHeapObject t true
-        let param = SParameter.New t (sprintf "v%d" (Threading.Interlocked.Increment(&valueTypeCounter)))
+        let param = createValueTypeParameter t
         SExpr.Parameter param, Seq.append [ param, obj1 ] moreObjs
     else
         // reference types default to null
@@ -144,6 +146,45 @@ and initHeapObject (t: TypeRef) definiteType =
       Fields = Seq.map fst fieldsWithObjects |> ImmutableDictionary.CreateRange
       Array = None
     }, Seq.collect snd fieldsWithObjects
+
+let rec copyReference (expr: SExpr) (state: ExecutionState) =
+    if expr.ResultType.IsPrimitive || not expr.ResultType.Reference.IsValueType || expr.ResultType.Definition.CustomAttributes |> Seq.exists (fun a -> a.AttributeType.FullName = "System.Runtime.CompilerServices.IsReadOnlyAttribute") then
+        expr, state
+    else
+
+    let result, procState =
+        accessObjectProperty (fun expr param ->
+            softAssert param.IsSome "Must have value"
+            let fields =
+                match state.Assumptions.Heap.TryGet(param.Value) with
+                | Some hobj -> softAssert hobj.TypeIsDefinite ""; hobj.Fields
+                | None -> dict<_, _>.Empty
+            let fields =
+                param.Value.Type.Fields
+                |> IArray.map (fun f -> f, fields.TryGet f |> Option.defaultWith (fun () -> SExpr.LdField f (Some expr)))
+            let t = param.Value.Type
+            let objParam = createValueTypeParameter t
+            let result = ExprSimplifier.assignParameters (fun p -> if p = param.Value then Some (SExpr.Parameter param.Value) else None) expr
+            let procState _condition state =
+                let fields, state =
+                    fields
+                    |> Seq.mapFold (fun state (field, value) ->
+                        let value, state = copyReference value state
+                        KeyValuePair(field, value), state
+                    ) state
+                let newObj =
+                    { HeapObject.Type = t
+                      TypeIsDefinite = true
+                      IsShared = SExpr.ImmConstant false
+                      Fields = fields |> ImmutableDictionary.CreateRange
+                      Array = None
+                    }
+                state.ChangeObject [objParam, newObj]
+            result, procState
+        ) expr
+
+    result, (procState (SExpr.ImmConstant true) state)
+
 
 let mutable private referenceTypeCounter = 0L
 let getObjectParam t = SParameter.New t (sprintf "o%d" (Threading.Interlocked.Increment(&referenceTypeCounter)))
@@ -243,7 +284,7 @@ let mergeStates a b =
         SideEffects = parent.SideEffects.AddRange(sideEffects)
     }
 
-/// Returns an array of Condition * Result Type tuples, used for devirtualization
+/// Returns an array of Condition * Result Type tuples, used for devirtualization and type check reduction
 let rec analyseReturnType (expr: SExpr) state =
     if expr.ResultType.IsPrimitive || expr.ResultType.Definition.IsSealed || expr.ResultType.Definition.IsValueType then
         [ SExpr.ImmConstant true, expr.ResultType, true ]
@@ -254,10 +295,10 @@ let rec analyseReturnType (expr: SExpr) state =
         let hobj = state.Assumptions.Heap.[a]
         [ SExpr.ImmConstant true, hobj.Type, hobj.TypeIsDefinite ]
     | SExprNode.Constant a -> [ SExpr.ImmConstant true, (if isNull a then expr.ResultType else CecilTools.convertType (a.GetType())), not (isNull a) ]
-    | SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst | InstructionFunction.Box), castTo, EqArray.AP [ expr ]) ->
+    | SExprNode.InstructionCall ((InstructionFunction.Cast | InstructionFunction.IsInst), castTo, EqArray.AP [ expr ]) ->
         analyseReturnType expr state
             |> List.map (fun (c, t, d) ->
-                if ExprSimplifier.isDownCast t castTo then
+                if d || ExprSimplifier.isDownCast t castTo then
                     (c, t, d)
                 else (c, castTo, false)
             )
@@ -310,10 +351,12 @@ let rec isTypeImmutable (m: TypeRef) =
         false
     else if m.Definition.CustomAttributes |> Seq.exists (fun a -> a.AttributeType.FullName = "System.Runtime.CompilerServices.IsReadOnlyAttribute") then
         true
+    else if m.Reference.IsValueType then
+        false // value types may be mutated in strange ways
     else
 
     let fields = m.Fields
-    (m.Definition.IsSealed || m.Definition.IsValueType) && fields |> Seq.forall (fun f -> f.Definition.IsInitOnly && isTypeImmutable f.FieldType)
+    (m.Definition.IsSealed || m.Definition.IsValueType) && fields |> Seq.forall (fun f -> f.Definition.IsInitOnly && isTypeImmutable f.FieldType) // TODO: what about unsealed types?
 
 let getPureMethodSideEffectInfo (m: MethodRef) =
     let argCount = (if m.Reference.HasThis then 1 else 0) + m.Reference.Parameters.Count
@@ -531,12 +574,14 @@ let setField target field value state =
     s (SExpr.ImmConstant true) state
 
 let setElement target index value state =
+    let elType = target.ResultType.Reference.GetElementType() |> TypeRef
+    let value = stackConvert value elType
     let _, s = target |> accessObjectProperty (fun expr objectParam ->
         let hobj = objectParam |> Option.bind (state.Assumptions.Heap.TryGet)
         match hobj with
         | (Some hobj) when hobj.IsShared <> SExpr.ImmConstant false ->
             // side effect...
-            let s = addFieldWriteSideEffect objectParam (FieldOrElement.ElementRef (index, target.ResultType.Reference.GetElementType() |> TypeRef)) value
+            let s = addFieldWriteSideEffect objectParam (FieldOrElement.ElementRef (index, elType)) value
             expr, s
         | (Some _) ->
             expr, (fun condition state ->
@@ -587,7 +632,7 @@ let readLValue (expr: SLExprNode) (state: ExecutionState) =
         if state.Locals.ContainsKey p then
             state.Locals.[p], state
         else
-            failwithf "Can't read LValue parameter %A" p
+            SExpr.Parameter p, state
     | SLExprNode.LdField (field, Some target) ->
         accessField target (FieldOrElement.FieldRef field) state
     | SLExprNode.LdField (field, None) ->
@@ -597,3 +642,10 @@ let dereference (expr: SExpr) (state: ExecutionState) =
     match expr.Node with
     | SExprNode.Reference lv -> readLValue lv state
     | _ -> failwithf "Can't deref"
+
+let rec makeReference (expr: SExpr) =
+    match expr.Node with
+    | SExprNode.Condition (c, a, b) ->
+        SExpr.Condition c (makeReference a) (makeReference b)
+    | SExprNode.LValue lv -> SExpr.Reference expr.ResultType lv
+    | _ -> failwithf "Can't make reference of %O" expr

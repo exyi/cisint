@@ -215,6 +215,33 @@ let ``default simplifier conditions`` () =
     )
 
 [<Fact>]
+let ``simplifier - type checks on Int32`` () =
+    let emptyAS = AssumptionSet.empty
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let expr1 = ExprSimplifier.createExprFromQuot <@ fun a -> (box a) :? System.Collections.IEnumerable @> [paramA]
+    let expr2 = ExprSimplifier.createExprFromQuot <@ fun a -> (box a) :? System.IComparable @> [paramA]
+    let expr3 = ExprSimplifier.createExprFromQuot <@ fun a -> (box a) :? System.Int32 @> [paramA]
+    let expr4 = ExprSimplifier.createExprFromQuot <@ fun a -> (box a) :? System.Int64 @> [paramA]
+    let expr5 = ExprSimplifier.createExprFromQuot <@ fun a -> (box a) :? System.Array @> [paramA]
+    let expr6 = ExprSimplifier.createExprFromQuot <@ fun a -> ((box a) :?> System.IComparable) :? System.IFormattable @> [paramA]
+    let expr7 = ExprSimplifier.createExprFromQuot <@ fun a -> (castAs<System.Collections.IEnumerable>((box a))) :?> System.Object = null @> [paramA]
+
+    // printfn "expr1: %s -> %s" (ExprFormat.exprToString expr1) (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr1))
+    // printfn "expr2: %s -> %s" (ExprFormat.exprToString expr2) (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr2))
+    // printfn "expr3: %s -> %s" (ExprFormat.exprToString expr3) (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr3))
+    // printfn "expr4: %s -> %s" (ExprFormat.exprToString expr4) (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr4))
+    // printfn "expr5: %s -> %s" (ExprFormat.exprToString expr5) (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr5))
+    // printfn "expr6: %s -> %s" (ExprFormat.exprToString expr6) (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr6))
+    // printfn "expr7: %s -> %s" (ExprFormat.exprToString expr7) (ExprFormat.exprToString (ExprSimplifier.simplify emptyAS expr7))
+    Assert.Equal(ExprSimplifier.simplify emptyAS expr1, SExpr.ImmConstant false)
+    Assert.Equal(ExprSimplifier.simplify emptyAS expr2, SExpr.ImmConstant true)
+    Assert.Equal(ExprSimplifier.simplify emptyAS expr3, SExpr.ImmConstant true)
+    Assert.Equal(ExprSimplifier.simplify emptyAS expr4, SExpr.ImmConstant false)
+    Assert.Equal(ExprSimplifier.simplify emptyAS expr5, SExpr.ImmConstant false)
+    Assert.Equal(ExprSimplifier.simplify emptyAS expr6, SExpr.ImmConstant true)
+    Assert.Equal(ExprSimplifier.simplify emptyAS expr7, SExpr.ImmConstant true)
+
+[<Fact>]
 let ``basic overload resolution`` () =
     let o = CecilTools.convertType typeof<TestRecord>
     let m = CecilTools.objType.Definition.Methods |> Seq.find (fun m -> m.Name = "GetHashCode") |> MethodRef
