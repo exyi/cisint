@@ -109,6 +109,9 @@ type Something = class
         match h.TryGetValue(a) with
         | (true, a) -> a
         | _ -> "lol"
+
+    static member SumIterator (a: int) =
+        Cisint.CsharpTestInputs.Class1.YieldSomeInts a |> Seq.sum
 end
 
 

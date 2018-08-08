@@ -158,6 +158,17 @@ let ``Simple object processing - UseGenericUnion`` () = task {
 }
 
 [<Fact>]
+let ``csharp iterator`` () = task {
+    let! result1, formatted = interpretMethod "SumIterator" "constant" state [ SExpr.ImmConstant 3 ]
+    // TODO: execute static constructors
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.Equal("-97", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    ()
+}
+
+
+[<Fact>]
 let ``hash table constant - UseHashTable`` () = task {
     let! result1, formatted = interpretMethod "UseHashTable" "constant_a" state [ SExpr.ImmConstant 2 ]
     // Assert.Equal(0, result1.SideEffects.Count)
