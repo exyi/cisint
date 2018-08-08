@@ -73,7 +73,7 @@ type FieldOrElement =
 with
     member x.ResultType =
         match x with
-        | FieldRef f -> TypeRef f.Reference.FieldType
+        | FieldRef f -> f.FieldType
         | ElementRef (_index, resultType) -> resultType
 
 type ConditionalEffect = (SExpr * SideEffect)

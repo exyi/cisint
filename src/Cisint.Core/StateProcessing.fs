@@ -422,7 +422,7 @@ let private isCallNonVirtual (m: MethodRef) (args: seq<SExpr>) state =
         Seq.zip args m.Reference.Parameters
         |> Seq.choose (fun (a, p) ->
             let resultTypes = analyseReturnType a state
-            match resultTypes |> Seq.tryFind (fun (c, t, d) -> t = TypeRef(p.ParameterType)) with
+            match resultTypes |> Seq.tryFind (fun (c, t, d) -> t = TypeRef(p.ParameterType.ResolvePreserve(m.GenericParameterAssigner))) with
             | Some (condition_same, _, _) when condition_same = SExpr.ImmConstant true ->
                 None
             | _ ->
@@ -463,7 +463,7 @@ let private addResultObject (result: SParameter) heapType (isShared: bool) (stat
     else
         let array, state =
             if result.Type.Reference.IsArray then
-                let elType = result.Type.Reference.GetElementType() |> TypeRef
+                let elType = (result.Type.Reference :?> Mono.Cecil.ArrayType).ElementType |> TypeRef
                 let a, state = newArray None elType state
                 a.Array, state
             else None, state
@@ -574,7 +574,7 @@ let setField target field value state =
     s (SExpr.ImmConstant true) state
 
 let setElement target index value state =
-    let elType = target.ResultType.Reference.GetElementType() |> TypeRef
+    let elType = (target.ResultType.Reference :?> Mono.Cecil.ArrayType).ElementType |> TypeRef
     let value = stackConvert value elType
     let _, s = target |> accessObjectProperty (fun expr objectParam ->
         let hobj = objectParam |> Option.bind (state.Assumptions.Heap.TryGet)

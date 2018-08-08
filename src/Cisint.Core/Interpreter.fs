@@ -19,6 +19,7 @@ open StateProcessing
 open Mono.Cecil.Rocks
 open System.Collections.Generic
 open System.Collections.Generic
+open System.Collections.Generic
 
 type InterpreterFrameInfo = {
     FrameToken: obj
@@ -37,7 +38,7 @@ type ExecutionCacheEntry = {
 }
 
 type InstructionPrefixes = {
-    Constained: TypeReference option
+    Constained: TypeRef option
     NoCheck: bool
     ReadOnly: bool
     Tail: bool
@@ -119,7 +120,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     let doBranch (stack: SExpr clist) condition =
         let state = { state with Stack = stack }
         let cSimpl = SExpr.InstructionCall InstructionFunction.Convert (CecilTools.boolType) [ condition ] |> ExprSimplifier.simplify state.Assumptions
-        printfn "Branching at %O if %s -> %s" instr (ExprFormat.exprToString condition) (ExprFormat.exprToString cSimpl)
+        // printfn "Branching at %O if %s -> %s" instr (ExprFormat.exprToString condition) (ExprFormat.exprToString cSimpl)
         if cSimpl.Node = SExprNode.Constant true then
             InterpretationResult.Branching [{ InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CurrentMethod (instr.Operand :?> Cil.Instruction, false) }]
         elif cSimpl.Node = SExprNode.Constant false then
@@ -313,8 +314,8 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         let returnI = if prefixes.Tail then None; else Some instr.Next
         let args, state = state.PopStack (method.Parameters.Count + if method.HasThis then 1 else 0)
         if op = OpCodes.Callvirt && prefixes.Constained.IsSome then
-            let overridenMethod = findOverridenMethod (TypeRef prefixes.Constained.Value) (MethodRef method)
-            if TypeRef.AreSameTypes overridenMethod.Reference.DeclaringType prefixes.Constained.Value then
+            let overridenMethod = findOverridenMethod prefixes.Constained.Value (MethodRef method)
+            if overridenMethod.DeclaringType = prefixes.Constained.Value then
                 // the function is overriden -> invoke it directly
                 InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (overridenMethod, args, returnI, false) } ]
             else
@@ -325,7 +326,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         else
             InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, args, returnI, op = OpCodes.Callvirt) } ]
 
-    elif op = OpCodes.Ldarg || op = OpCodes.Ldarg_S then getLocal (arguments.[(instr.Operand :?> ParameterDefinition).Index])
+    elif op = OpCodes.Ldarg || op = OpCodes.Ldarg_S then getLocal (arguments.[(instr.Operand :?> ParameterDefinition).Sequence])
     elif op = OpCodes.Ldarg_0 then getLocal (arguments.[0])
     elif op = OpCodes.Ldarg_1 then getLocal (arguments.[1])
     elif op = OpCodes.Ldarg_2 then getLocal (arguments.[2])
@@ -338,9 +339,9 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Ldloca || op = OpCodes.Ldloca_S then
         pushToStack (SExpr.ParamReference (locals.[(instr.Operand :?> VariableDefinition).Index]))
     elif op = OpCodes.Ldarga || op = OpCodes.Ldarga_S then
-        pushToStack (SExpr.ParamReference (arguments.[(instr.Operand :?> ParameterDefinition).Index]))
+        pushToStack (SExpr.ParamReference (arguments.[(instr.Operand :?> ParameterDefinition).Sequence]))
 
-    elif op = OpCodes.Starg || op = OpCodes.Starg_S then setLocal (arguments.[(instr.Operand :?> ParameterDefinition).Index])
+    elif op = OpCodes.Starg || op = OpCodes.Starg_S then setLocal (arguments.[(instr.Operand :?> ParameterDefinition).Sequence])
     elif op = OpCodes.Stloc || op = OpCodes.Stloc_S then setLocal (locals.[(instr.Operand :?> VariableDefinition).Index])
     elif op = OpCodes.Stloc_0 then setLocal (locals.[0])
     elif op = OpCodes.Stloc_1 then setLocal (locals.[1])
@@ -426,7 +427,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
          op = OpCodes.Ldelem_U2 ||
          op = OpCodes.Ldelem_U4 then
          let [target; index], state = state.PopStack 2
-         let e, state = StateProcessing.accessField target (FieldOrElement.ElementRef (index, target.ResultType.Reference.GetElementType() |> TypeRef)) state
+         let e, state = StateProcessing.accessField target (FieldOrElement.ElementRef (index, (target.ResultType.Reference :?> Mono.Cecil.ArrayType).ElementType |> TypeRef)) state
          InterpretationResult.NewState ({state with Stack = stackLoadConvert e :: state.Stack})
     elif op = OpCodes.Stelem_Any ||
          op = OpCodes.Stelem_Ref ||
@@ -447,10 +448,12 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
     let methodDef = methodref.Definition
     let method = methodref.Reference
     let genericAssigner = methodref.GenericParameterAssigner
+    let allParameters = Seq.append (if methodDef.IsStatic then [] else [methodDef.Body.ThisParameter]) method.Parameters |> IArray.ofSeq
     assertOrComplicated (methodDef.Body <> null) "method does not have body"
     assertOrComplicated (not method.HasGenericParameters) "method contains unbound generic parameters"
     assertOrComplicated (methodDef.Body.ExceptionHandlers.Count = 0) "there are exception handlers" // TODO
-    softAssert (methodDef.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id) "variable indixes don't fit"
+    softAssert (methodDef.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id) "variable indices don't fit"
+    softAssert (allParameters |> Seq.mapi (fun i v -> v.Sequence = i) |> Seq.forall id) "parameter indices don't fit"
     softAssert (args |> Seq.zip methodref.ParameterTypes |> Seq.forall (fun (t, a) -> a.ResultType = t)) <| sprintf "Method argument mismatch %O <- %A" methodref (args |> Seq.map (fun a -> a.ResultType) |> Seq.toArray)
 
     let frameInfo = { InterpreterFrameInfo.Method = methodref; Args = args; FrameToken = obj(); CurrentInstruction = null; BranchingFactor = 1 }
@@ -464,17 +467,16 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
     with _ -> ()
 
     let locals = methodDef.Body.Variables
-                 |> Seq.map (fun var -> SParameter.New (TypeRef (var.VariableType.ResolvePreserve genericAssigner)) (sprintf "%s_loc%d" method.Name var.Index))
                  |> IArray.ofSeq
-    let parameters = Seq.append (if methodDef.IsStatic then [] else [methodDef.Body.ThisParameter]) method.Parameters
-                     |> Seq.map (fun var -> SParameter.New (TypeRef (var.ParameterType.ResolvePreserve genericAssigner)) (sprintf "%s_loc%d" method.Name var.Index))
-                     |> IArray.ofSeq
+                 |> IArray.map (fun var -> SParameter.New (TypeRef (var.VariableType.ResolvePreserve genericAssigner)) (sprintf "%s_loc%d" method.Name var.Index))
+    let parameters = allParameters
+                     |> IArray.map (fun var -> SParameter.New (TypeRef (var.ParameterType.ResolvePreserve genericAssigner)) (sprintf "%s_param%d" method.Name var.Index))
     let state = (initLocals locals) state
     let state = { state with Locals = state.Locals.AddRange(Seq.map2 (fun p a -> KeyValuePair(p, a)) parameters args) }
 
     let rec interpretBlock prefixes (i: Cil.Instruction) state =
         if i.OpCode = OpCodes.Constrained then
-            interpretBlock { prefixes with Constained = Some (i.Operand :?> TypeReference) } i.Next state
+            interpretBlock { prefixes with Constained = Some ((i.Operand :?> TypeReference).ResolvePreserve(genericAssigner) |> TypeRef) } i.Next state
         elif i.OpCode = OpCodes.No then
             interpretBlock { prefixes with NoCheck = true } i.Next state
         elif i.OpCode = OpCodes.Readonly then
@@ -514,19 +516,19 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
             // printfn "Branching in %O:" method
             let todoFunctions =
                 todoItems
-                |> Seq.map (fun t () ->
+                |> Seq.map (fun t ->
                     match t.Target with
                     | InterpreterTodoTarget.CurrentMethod (i, leave) ->
                         assertOrComplicated (not leave) "Contains leave instruction" //TODO exceptions
                         // printfn "Jumping to '%O', with condition %A" i (List.ofSeq t.State.Conditions |> List.map ExprFormat.exprToString)
-                        interpretFrom i t.State cycleDetection
+                        fun () -> interpretFrom i t.State cycleDetection
                     | InterpreterTodoTarget.CallMethod (m, args, returnI, virt) ->
                         let state = t.State
                         let savedStack = state.Stack
                         let state = { state with Stack = [] }
                         let recurse = if virt then interpretVirtualMethod else interpretMethod
                         let args = IArray.ofSeq (Seq.map2 stackConvert args m.ParameterTypes) |> IArray.map (ExprSimplifier.simplify state.Assumptions)
-                        task {
+                        fun () -> task {
                             let! resultState = recurse m state args dispatchFrame
                             softAssert (LanguagePrimitives.PhysicalEquality resultState.Parent state.Parent) "Can't change parent by interpreting"
                             let resultState = { resultState with Stack = List.append resultState.Stack savedStack }

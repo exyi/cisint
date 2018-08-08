@@ -1,6 +1,7 @@
 namespace Cisint.Tests.TestInputs
 
 open Expression
+open System.Collections.Generic
 type TestRecord = {
     SomeProp: int
     AnotherProp: string Option
@@ -33,6 +34,9 @@ type NotSoGenericType() =
 
 
 type Something = class
+    static member GetSomeDictionary (i: int) = let d = Dictionary<string, int>()
+                                               d.Add("i", i)
+                                               d
     static member A a b = a ^^^ b
     static member WithCondition a b = if a + 1 > b then a + 1 else b
     static member WithCondition2 a b = if a + 1 <= b then b else a + 1

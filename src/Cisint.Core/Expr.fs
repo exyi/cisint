@@ -113,7 +113,7 @@ with
         SExpr.New (TypeRef field.Reference.FieldType) node
      static member LdElement target index =
         let node = LValue (LdElement (target, index))
-        SExpr.New (TypeRef (target.ResultType.Reference.GetElementType())) node
+        SExpr.New (TypeRef ((target.ResultType.Reference :?> Mono.Cecil.ArrayType).ElementType)) node
      static member Condition cond ifTrue ifFalse =
         softAssert (ifTrue.ResultType = ifFalse.ResultType) <| sprintf "condition branches must have the same type, %O vs %O" ifTrue.ResultType ifFalse.ResultType
         softAssert (cond.ResultType.Reference.MetadataType = Mono.Cecil.MetadataType.Boolean) "condition must be boolean"

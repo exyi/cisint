@@ -4,6 +4,8 @@ open System.Collections.Immutable
 open System
 open System.Collections.Generic
 open Mono.Cecil
+open Mono.Cecil
+open Mono.Cecil
 
 type clist<'a> = list<'a>
 type array<'a> = ImmutableArray<'a>
@@ -128,20 +130,33 @@ type TypeReference with
         member x.ResolvePreserve (customMapping: TypeReference -> TypeReference option) : TypeReference =
                 let mapping = customMapping x
                 if mapping.IsSome then
-                        mapping.Value
+                    mapping.Value
                 elif x.IsGenericInstance then
-                        let previousInstance = x :?> GenericInstanceType
-                        let instance = new GenericInstanceType(previousInstance.ElementType.ResolvePreserve(customMapping))
-                        for argument in previousInstance.GenericArguments do
-                                instance.GenericArguments.Add (argument.ResolvePreserve(customMapping));
-                        instance :> TypeReference
+                    let previousInstance = x :?> GenericInstanceType
+                    let instance = new GenericInstanceType(previousInstance.ElementType.ResolvePreserve(fun m ->
+                        // blacklist the parameters
+                        if m :? GenericParameter && previousInstance.ElementType.GenericParameters.Contains (m :?> GenericParameter) then
+                            None
+                        else customMapping m))
+                    for argument in previousInstance.GenericArguments do
+                        instance.GenericArguments.Add (argument.ResolvePreserve(customMapping))
+                    instance :> TypeReference
                 elif x.IsArray then
-                        let x = x :?> ArrayType
-                        new Mono.Cecil.ArrayType(x.GetElementType().ResolvePreserve(customMapping), x.Rank) :> TypeReference
+                    let x = x :?> ArrayType
+                    new Mono.Cecil.ArrayType(x.ElementType.ResolvePreserve(customMapping), x.Rank) :> TypeReference
 
                 elif x.IsByReference then
-                        let x = x :?> ByReferenceType
-                        new Mono.Cecil.ByReferenceType(x.ElementType.ResolvePreserve(customMapping)) :> TypeReference
+                    let x = x :?> ByReferenceType
+                    new Mono.Cecil.ByReferenceType(x.ElementType.ResolvePreserve(customMapping)) :> TypeReference
+                elif x.HasGenericParameters then
+                    let p = x.GenericParameters |> Seq.map (fun p -> p.ResolvePreserve(customMapping)) |> Seq.toList
+                    if Seq.toList (x.GenericParameters |> Seq.map (fun x -> x :> TypeReference)) <> p then
+                        let g = new Mono.Cecil.GenericInstanceType(x.TryResolve())
+                        for i in p do
+                            g.GenericArguments.Add i
+                        g :> _
+                    else
+                        x.TryResolve()
                 else x.TryResolve ()
 
 type MethodReference with

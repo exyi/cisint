@@ -1,6 +1,9 @@
 module TypesystemDefinitions
 open System
 open Mono.Cecil
+open ICSharpCode.Decompiler.TypeSystem
+open Mono.Cecil
+open Mono.Cecil
 
 // returns assignment of generic parameters - type parameter * argument
 let private getGenericAssignment_type (typeDef: TypeDefinition) (typeRef: TypeReference) =
@@ -25,6 +28,19 @@ let private createGenericParameterAssigner (values: seq<GenericParameter * TypeR
              | _ -> None
 
 type TypeRef (cecilReference: TypeReference) =
+    let rec checkGenerics (t: TypeReference) =
+        softAssert (not t.HasGenericParameters) <| sprintf "Type %O has generic parameters" cecilReference
+        match t with
+        | :? GenericInstanceType as t ->
+            t.GenericArguments |> Seq.iter checkGenerics
+        | :? ArrayType as t ->
+            checkGenerics t.ElementType
+        | :? ByReferenceType as t ->
+            checkGenerics t.ElementType
+        | :? GenericParameter as p ->
+            softAssert false <| sprintf "Type %O has generic parameter %O" cecilReference p
+        | _ -> ()
+    do checkGenerics cecilReference
     let cecilReference =
         // strip the modifiers
         match cecilReference with
@@ -135,6 +151,15 @@ type TypeRef (cecilReference: TypeReference) =
         // if not cecilReference.IsGenericInstance then IArray.ofSeq x.Definition.Fields |> IArray.map (FieldRef)
         // else
         IArray.ofSeq x.Definition.Fields |> IArray.map (fun f -> f.RebaseOn cecilReference |> FieldRef)
+    /// Gets all methods with instantiated generic arguments, including base types
+    member x.Methods =
+        (match x.BaseType with
+         | Some a -> IArray.append x.LocalMethods a.Methods
+         | None -> x.LocalMethods)
+    member private x.LocalMethods : MethodRef array =
+        // if not cecilReference.IsGenericInstance then IArray.ofSeq x.Definition.Fields |> IArray.map (FieldRef)
+        // else
+        IArray.ofSeq x.Definition.Methods |> IArray.map (fun f -> f.RebaseOn cecilReference |> MethodRef)
 
     override x.Equals(o) =
         match o with
@@ -158,7 +183,7 @@ and MethodRef(cecilReference: MethodReference) =
         softAssert (cecilDefintion.Value <> null) <| sprintf "Can't resolve method %O" cecilReference
         cecilDefintion.Value
     member _x.Reference = cecilReference
-    member _x.ReturnType = TypeRef(cecilReference.ReturnType)
+    member x.ReturnType = TypeRef(cecilReference.ReturnType.ResolvePreserve x.GenericParameterAssigner)
     member _x.DeclaringType = TypeRef(cecilReference.DeclaringType)
     member x.ParameterTypes =
                                                                                      // v For some reason the parameters are not assigned in a reference
@@ -200,7 +225,8 @@ and FieldRef(cecilReference: FieldReference) =
         cecilDefintion.Value
     member _x.Reference = cecilReference
     member _x.Name = cecilReference.Name
-    member _x.FieldType = TypeRef(cecilReference.FieldType)
+    member _x.DeclaringType = cecilReference.DeclaringType |> TypeRef
+    member x.FieldType = TypeRef(cecilReference.FieldType.ResolvePreserve x.DeclaringType.GenericParameterAssigner)
 
     static member AreSameFields (a: FieldReference) (b: FieldReference) =
         if Object.ReferenceEquals(a, b) then

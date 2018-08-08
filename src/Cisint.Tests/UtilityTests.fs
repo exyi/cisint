@@ -3,6 +3,7 @@ open Xunit
 open Cisint.Tests.TestInputs
 open Mono.Cecil
 open Mono.Cecil.Cil
+open TypesystemDefinitions
 
 [<Fact>]
 let ``init IArray`` () =
@@ -27,8 +28,8 @@ let ``Mono.Cecil inheritance`` () =
 
 [<Fact>]
 let ``Mono.Cecil generics`` () =
-    let t1 = CecilTools.convertType typedefof<GenericType<_>>
-    let method1 = t1.Definition.Methods |> Seq.find (fun m -> m.Name = "Contains")
+    let t1 = CecilTools.convertTypeToRaw typedefof<GenericType<_>>
+    let method1 = t1.Methods |> Seq.find (fun m -> m.Name = "Contains")
     Assert.Equal("System.Boolean Cisint.Tests.TestInputs.GenericType`1::Contains(x)", method1.FullName)
     Assert.True(method1.ContainsGenericParameter)
     Assert.Equal(MethodCallingConvention.Default, method1.CallingConvention)
@@ -36,7 +37,7 @@ let ``Mono.Cecil generics`` () =
     Assert.Equal(0, method1.GenericParameters.Count)
     Assert.False(method1.IsVirtual)
 
-    let method2 = t1.Definition.Methods |> Seq.find (fun m -> m.Name = "DoNothing")
+    let method2 = t1.Methods |> Seq.find (fun m -> m.Name = "DoNothing")
     Assert.Equal("a Cisint.Tests.TestInputs.GenericType`1::DoNothing(a)", method2.FullName)
     Assert.True(method2.ContainsGenericParameter)
     Assert.Equal(MethodCallingConvention.Generic, method2.CallingConvention)
@@ -46,7 +47,7 @@ let ``Mono.Cecil generics`` () =
     Assert.True(method2.GenericParameters.[0].IsGenericParameter)
     Assert.False(method2.IsVirtual)
 
-    let method3 = t1.Definition.Methods |> Seq.find (fun m -> m.Name = "ProcWithNothing")
+    let method3 = t1.Methods |> Seq.find (fun m -> m.Name = "ProcWithNothing")
     let callInstruction = method3.Body.Instructions |> Seq.find (fun i -> i.OpCode.OperandType = OperandType.InlineMethod)
     let calledMethod = callInstruction.Operand :?> MethodReference
     let calledMethodResolved = calledMethod.ResolvePreserve()
@@ -55,6 +56,24 @@ let ``Mono.Cecil generics`` () =
     Assert.Equal("!!0 Cisint.Tests.TestInputs.GenericType`1<x>::DoNothing<x>(!!0)", calledMethodResolved.FullName)
     Assert.True(calledMethodResolved.DeclaringType.GetElementType().IsDefinition)
     Assert.False(calledMethod.HasGenericParameters)
+
+[<Fact>]
+let ``generics and TypeRefs``() =
+    let something = CecilTools.convertType typeof<Something>
+    let method = something.Methods |> Seq.find (fun m -> m.Reference.Name = "GetSomeDictionary")
+    let dictionaryType = method.ReturnType
+    Assert.Equal("System.Collections.Generic.Dictionary`2<System.String,System.Int32>", string dictionaryType)
+
+    let resolvedArgs = dictionaryType.Definition.GenericParameters |> Seq.map (fun a -> dictionaryType.GenericParameterAssigner (a :> _)) |> Seq.toList
+    Assert.Equal(sprintf "%A" resolvedArgs, "[Some System.String; Some System.Int32]")
+
+    Assert.Equal(dictionaryType, TypeRef(dictionaryType.Definition.ResolvePreserve(dictionaryType.GenericParameterAssigner)))
+
+    let fields = dictionaryType.Fields |> IArray.ofSeq
+    let entriesField = fields |> Seq.find (fun f -> f.Name = "_entries")
+    Assert.Equal(entriesField.DeclaringType, dictionaryType)
+    Assert.Equal("System.Collections.Generic.Dictionary`2/Entry<System.String,System.Int32>[]", entriesField.FieldType.ToString())
+    Assert.Equal("System.Collections.Generic.Dictionary`2/Entry<System.String,System.Int32>[]", entriesField.FieldType.Reference.ResolvePreserve(entriesField.FieldType.GenericParameterAssigner).ToString())
 
 [<Fact>]
 let ``array forall`` () =
