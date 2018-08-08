@@ -34,6 +34,7 @@ type InstructionFunction =
     | Unbox = 18
     | Xor = 19
     | Cast = 20
+    | ArrLen = 22
 
 [<CustomComparisonAttribute>]
 [<CustomEquality>]

@@ -77,6 +77,10 @@ type Something = class
         let array = [|b; b; b|]
         array.[a] <- b + 1
         array.[b] <- 42
+        if array.Length <> 3 then
+            Something.SideEffect1 1 |> ignore
+        // if array.LongLength <> 3L then // TODO: add instristic for this
+        //     Something.SideEffect1 1 |> ignore
         array.[a]
 
     static member UseEnums (a: int) (b: InstructionFunction) =

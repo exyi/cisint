@@ -43,6 +43,8 @@ let stackConvert (expr: SExpr) (targetType: TypeRef) =
     elif expr.ResultType.IsObjectReference && targetType.IsObjectReference &&
         expr.Node = SExprNode.Constant null then
         SExpr.New targetType (expr.Node)
+    elif targetType.FullName = "System.Array" && expr.ResultType.Reference.IsArray then
+        SExpr.Cast InstructionFunction.Cast targetType expr
     else
         softAssert false <| sprintf "Can't do implicit stack conversion %O -> %O" expr.ResultType targetType
         failwith ""
@@ -544,6 +546,17 @@ let accessField target field state =
             //     let t = a.GetType().GetField(field.Name, System.Reflection.BindingFlags.Instance ||| System.Reflection.BindingFlags.NonPublic||| System.Reflection.BindingFlags.Public)
             //     t.GetValue a |> SExprNode.Constant |> SExpr.New field.FieldType, (fun _ a -> a)
             | _ -> SExpr.LdElement expr index, (fun _ a -> a)
+    )
+    ExprSimplifier.simplify state.Assumptions result, s (SExpr.ImmConstant true) state
+
+let accessLength target state =
+    let result, s = target |> accessObjectProperty (fun expr objectParam ->
+        let hobj = objectParam |> Option.bind (state.Assumptions.Heap.TryGet)
+        match hobj with
+        | (Some { Array = Some({ Length = Some(l) }) }) ->
+            l, fun _ -> id
+        | _ ->
+            SExpr.InstructionCall InstructionFunction.ArrLen CecilTools.nintType [ expr ], fun _ -> id
     )
     ExprSimplifier.simplify state.Assumptions result, s (SExpr.ImmConstant true) state
 

@@ -441,6 +441,10 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
          let [target; index; value], state = state.PopStack 3
          let state = StateProcessing.setElement target index value state
          InterpretationResult.NewState (state)
+    elif op = OpCodes.Ldlen then
+        let [target], state = state.PopStack 1
+        let r, state = StateProcessing.accessLength target state
+        InterpretationResult.NewState ({state with Stack = stackLoadConvert r :: state.Stack})
 
     else tooComplicated <| sprintf "unsupported instruction %O" instr
 
@@ -448,10 +452,10 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
     let methodDef = methodref.Definition
     let method = methodref.Reference
     let genericAssigner = methodref.GenericParameterAssigner
-    let allParameters = Seq.append (if methodDef.IsStatic then [] else [methodDef.Body.ThisParameter]) method.Parameters |> IArray.ofSeq
     assertOrComplicated (methodDef.Body <> null) "method does not have body"
-    assertOrComplicated (not method.HasGenericParameters) "method contains unbound generic parameters"
     assertOrComplicated (methodDef.Body.ExceptionHandlers.Count = 0) "there are exception handlers" // TODO
+    assertOrComplicated (not method.HasGenericParameters) "method contains unbound generic parameters"
+    let allParameters = Seq.append (if methodDef.IsStatic then [] else [methodDef.Body.ThisParameter]) method.Parameters |> IArray.ofSeq
     softAssert (methodDef.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id) "variable indices don't fit"
     softAssert (allParameters |> Seq.mapi (fun i v -> v.Sequence = i) |> Seq.forall id) "parameter indices don't fit"
     softAssert (args |> Seq.zip methodref.ParameterTypes |> Seq.forall (fun (t, a) -> a.ResultType = t)) <| sprintf "Method argument mismatch %O <- %A" methodref (args |> Seq.map (fun a -> a.ResultType) |> Seq.toArray)
@@ -516,7 +520,8 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
             // printfn "Branching in %O:" method
             let todoFunctions =
                 todoItems
-                |> Seq.map (fun t ->
+                |> IArray.ofSeq
+                |> IArray.map (fun t ->
                     match t.Target with
                     | InterpreterTodoTarget.CurrentMethod (i, leave) ->
                         assertOrComplicated (not leave) "Contains leave instruction" //TODO exceptions
@@ -537,7 +542,6 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                             | None -> return resultState
                         }
                 )
-                |> IArray.ofSeq
             runAndMerge todoFunctions (dispatchFrame [ { frameInfo with CurrentInstruction = i; BranchingFactor = todoFunctions.Length } ])
 
     let instructions = methodDef.Body.Instructions
