@@ -147,7 +147,7 @@ and initHeapObject (t: TypeRef) definiteType =
       IsShared = SExpr.ImmConstant false
       Fields = Seq.map fst fieldsWithObjects |> ImmutableDictionary.CreateRange
       Array = None
-    }, Seq.collect snd fieldsWithObjects
+    }, (Seq.collect snd fieldsWithObjects |> IArray.ofSeq)
 
 let rec copyReference (expr: SExpr) (state: ExecutionState) =
     if expr.ResultType.IsPrimitive || not expr.ResultType.Reference.IsValueType || expr.ResultType.Definition.CustomAttributes |> Seq.exists (fun a -> a.AttributeType.FullName = "System.Runtime.CompilerServices.IsReadOnlyAttribute") then
@@ -209,6 +209,8 @@ let initLocals (p: #seq<SParameter>) (state: ExecutionState) =
 
 let mergeArrays a b =
     failwith "NotSupported"
+
+
 
 let mergeStates a b =
     softAssert (a.Parent = b.Parent) "Merged states need to have the same parent"
@@ -279,12 +281,12 @@ let mergeStates a b =
         }
 
     { parent with
-        ChangedHeapObjects = Seq.map fst changedObjects |> List.ofSeq
+        ChangedHeapObjects = List.append  (Seq.map fst changedObjects |> List.ofSeq) parent.ChangedHeapObjects
         Assumptions = AssumptionSet.changeObj changedObjects parent.Assumptions
         Stack = stack
         Locals = locals
         SideEffects = parent.SideEffects.AddRange(sideEffects)
-    }
+    }.AssertSomeInvariants()
 
 /// Returns an array of Condition * Result Type tuples, used for devirtualization and type check reduction
 let rec analyseReturnType (expr: SExpr) state =
@@ -476,8 +478,12 @@ let private addResultObject (result: SParameter) heapType (isShared: bool) (stat
                       IsShared = SExpr.ImmConstant isShared
                       Array = array } ]
 
+let assertDecidableArgs (args: SExpr seq) =
+    assertOrComplicated (args |> Seq.forall (fun a -> not a.IsUndecidable)) "Can't create a side effect with undecidable args."
+
 let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt state =
     let args = IArray.ofSeq args
+    assertDecidableArgs args
     let hasNonvirtualArgs = virt || isCallNonVirtual m args state
     if seInfo.IsPure && hasNonvirtualArgs then
         let expressionResult = SExpr.PureCall m args
@@ -501,6 +507,7 @@ let private addFieldReadSideEffect (target: SParameter option) (field: FieldOrEl
         addResultObject result None true state
     )
 let private addFieldWriteSideEffect (target: SParameter option) (field: FieldOrElement) (value: SExpr) condition state =
+    assertDecidableArgs [value]
     let effect = SideEffect.FieldWrite (target, field, value, state.Assumptions)
     { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
 
@@ -561,6 +568,7 @@ let accessLength target state =
     ExprSimplifier.simplify state.Assumptions result, s (SExpr.ImmConstant true) state
 
 let setField target field value state =
+    assertDecidableArgs [target; value]
     let _, s = target |> accessObjectProperty (fun expr objectParam ->
         let hobj = objectParam |> Option.bind (state.Assumptions.Heap.TryGet)
         match hobj with
@@ -587,6 +595,7 @@ let setField target field value state =
     s (SExpr.ImmConstant true) state
 
 let setElement target index value state =
+    assertDecidableArgs [target; value]
     let elType = (target.ResultType.Reference :?> Mono.Cecil.ArrayType).ElementType |> TypeRef
     let value = stackConvert value elType
     let _, s = target |> accessObjectProperty (fun expr objectParam ->

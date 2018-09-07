@@ -83,6 +83,7 @@ and SideEffect =
     | FieldWrite of target: SParameter option * FieldOrElement * value: SExpr * atState: AssumptionSet
     | FieldRead of target: SParameter option * FieldOrElement * resultValue: SParameter * atState: AssumptionSet
     | Throw of value: SParameter * atState: AssumptionSet
+    | ExceptionHandledEffects of body: ConditionalEffect array * exceptionValue: SParameter * finallyHandler: SideEffect * catchHandler: SideEffect
     | Effects of ConditionalEffect array
 
 type ExecutionState = {
@@ -106,18 +107,26 @@ type ExecutionState = {
             yield! x.SideEffects
         }
     member x.WithCondition (conditions: #seq<SExpr>) =
-        { ExecutionState.Parent = Some x; SideEffects = list<_>.Empty; Conditions = IArray.ofSeq conditions; Assumptions = AssumptionSet.add conditions x.Assumptions; Stack = x.Stack; ChangedHeapObjects = []; Locals = x.Locals }
+        { ExecutionState.Parent = Some x; SideEffects = list<_>.Empty; Conditions = IArray.ofSeq conditions; Assumptions = AssumptionSet.add conditions x.Assumptions; Stack = x.Stack; ChangedHeapObjects = []; Locals = x.Locals }.AssertSomeInvariants()
     member x.ChangeObject (objs: #seq<SParameter * HeapObject>) =
-        { x with Assumptions = AssumptionSet.changeObj objs x.Assumptions; ChangedHeapObjects = List.append (List.ofSeq <| Seq.map fst objs) x.ChangedHeapObjects }
+        let objs = IArray.ofSeq objs
+        { x with Assumptions = AssumptionSet.changeObj objs x.Assumptions; ChangedHeapObjects = List.append (List.ofSeq <| Seq.map fst objs) x.ChangedHeapObjects }.AssertSomeInvariants()
     /// Takes `count` elements from the stack and returns them in natural order (reversed stack order)
     member x.PopStack (count: int) =
         let head = List.take count x.Stack
         List.rev head, { x with Stack = List.skip count x.Stack }
     static member Empty = { ExecutionState.Parent = None; SideEffects = list<_>.Empty; Conditions = array<_>.Empty; Assumptions = AssumptionSet.empty; Stack = []; ChangedHeapObjects = []; Locals = dict<_, _>.Empty }
 
+    member x.AssertSomeInvariants () =
+#if DEBUG
+        softAssert (x.ChangedHeapObjects |> Seq.forall (x.Assumptions.Heap.ContainsKey)) "EState has inconsistent heap"
+#endif
+        x
+
 type InterpreterTodoTarget =
-    | CurrentMethod of Mono.Cecil.Cil.Instruction * isLeave: bool
+    | CurrentMethod of Mono.Cecil.Cil.Instruction
     | CallMethod of MethodRef * args: SExpr clist * returnInstruction: option<Mono.Cecil.Cil.Instruction> * isVirtual: bool
+    | ExceptionHandlerEntry of Mono.Cecil.Cil.Instruction
 
 type InterpreterTodoItem = {
     State: ExecutionState
@@ -128,6 +137,11 @@ type InterpretationResult =
     | NewState of ExecutionState
     | Branching of InterpreterTodoItem clist
     | Return of ExecutionState
+    | ExitExceptionHandler of ExecutionState * target: Mono.Cecil.Cil.Instruction option
+
+type InterpreterReturnType =
+    | NextMethod
+    | LeaveExceptionHandler of target: Mono.Cecil.Cil.Instruction option
 
 type MethodArgumentEffect =
     /// The method only reads from the passed object

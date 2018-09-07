@@ -110,6 +110,12 @@ type Something = class
         | (true, a) -> a
         | _ -> "lol"
 
+    static member SimpleTryFinally (a: int) =
+        try
+            Something.SideEffect1 a
+        finally
+            Something.WithCondition a (a + 1) |> ignore
+
     static member SumIterator (a: int) =
         Cisint.CsharpTestInputs.Class1.YieldSomeInts a |> Seq.sum
 end

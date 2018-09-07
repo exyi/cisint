@@ -17,7 +17,10 @@ let testMethod =
     fun name -> t.Definition.Methods |> Seq.find (fun m -> m.Name = name) |> MethodRef
 
 let state = ExecutionState.Empty
-let dispatcher = Interpreter.createSynchronousDispatcher (fun x -> ())
+let dispatcher = Interpreter.createSynchronousDispatcher (fun frames ->
+    // printfn "%A" frames
+    assertOrComplicated (frames.Length < 30) (sprintf "To many method calls:\n%s" (String.Join("\n", frames)))
+    )
 
 printfn "Current directory is %s" (IO.Directory.GetCurrentDirectory())
 
@@ -154,6 +157,18 @@ let ``Simple object processing - UseGenericUnion`` () = task {
     // Assert.Equal(0, result1.SideEffects.Count)
     // Assert.DoesNotContain(".heapStuff", formatted)
     // Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    ()
+}
+
+[<Fact>]
+let ``SimpleTryFinally`` () = task {
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let! result1, formatted = interpretMethod "SimpleTryFinally" "general" state [ SExpr.Parameter paramA ]
+    Assert.Equal(1, result1.SideEffects.Count)
+    let (c, SideEffect.MethodCall (m, _, args, _virt, _global, _state)) = result1.SideEffects.[0]
+    Assert.Equal("true", ExprFormat.exprToString c)
+    Assert.Equal("a", ExprFormat.exprToString args.[0])
+    Assert.Equal("SideEffect1", m.Reference.Name)
     ()
 }
 

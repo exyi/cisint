@@ -35,6 +35,8 @@ type InstructionFunction =
     | Xor = 19
     | Cast = 20
     | ArrLen = 22
+    // Sentinel value for undecidable values. (State of variables after ommited exception handler, anything computed from other undecidables)
+    | Undecidable = 23
 
 [<CustomComparisonAttribute>]
 [<CustomEquality>]
@@ -83,6 +85,7 @@ and SExpr = {
 with
      override x.ToString() =
         sprintf "expression %s : %O" (x.Node.GetType().Name) x.ResultType
+     member a.IsUndecidable = match a.Node with SExprNode.InstructionCall (InstructionFunction.Undecidable, _, _) -> true | _ -> false
      static member New resultType node =
         let struct (cRank, lRank) = SExpr.CountExprNodes node
         { SExpr.Node = node; ResultType = resultType; SimplificationVersion = AssumptionSetVersion.None; NodeLeavesRank = lRank; NodeCountRank = cRank }
@@ -95,6 +98,7 @@ with
      static member Cast func rtype node =
         if node.ResultType = rtype && (func <> InstructionFunction.IsInst || rtype.IsObjectReference) then node
         else SExpr.InstructionCall func rtype [ node ]
+     static member Undecidable t = SExpr.InstructionCall InstructionFunction.Undecidable t []
      static member Parameter p =
         let node = LValue (Parameter p)
         SExpr.New p.Type node

@@ -302,6 +302,15 @@ let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
         let args = args.arr |> IArray.map (fun a -> match a.Node with SExprNode.Constant a -> a | _ -> failwith "wtf")
         let result = executeConstantInstruction i resultT args
         SExpr.New expr.ResultType (SExprNode.Constant result)
+    // undecidable folding
+    | SExprNode.Condition (c, a, b) when a.IsUndecidable || b.IsUndecidable || c.IsUndecidable -> SExpr.Undecidable expr.ResultType
+    | SExprNode.InstructionCall (_, _, a) | SExprNode.PureCall (_, a) when a.arr |> Seq.exists (fun a -> a.IsUndecidable) -> SExpr.Undecidable expr.ResultType
+    | SExprNode.Reference lv | SExprNode.LValue lv when
+        (match lv with
+         | SLExprNode.Dereference a | SLExprNode.LdField(_, Some a) when a.IsUndecidable -> true
+         | SLExprNode.LdElement(a, b) when a.IsUndecidable || b.IsUndecidable -> true
+         | _ -> false)
+        -> SExpr.Undecidable expr.ResultType
     // conversion to and back
     | SExprNode.InstructionCall (InstructionFunction.Convert, convertTo, EqArray.AP [ { Node = SExprNode.InstructionCall(InstructionFunction.Convert, convertFrom, EqArray.AP [insideExpr]) } as convExpr ])
         when convertTo = insideExpr.ResultType && lossLessConversions.Contains (struct (convertTo, convertFrom)) ->

@@ -20,6 +20,11 @@ open Mono.Cecil.Rocks
 open System.Collections.Generic
 open System.Collections.Generic
 open System.Collections.Generic
+open Mono.Cecil.Cil
+open System.Collections.Generic
+open System.Collections.Generic
+open Mono.Cecil.Cil
+open System.Collections.Generic
 
 type InterpreterFrameInfo = {
     FrameToken: obj
@@ -29,7 +34,7 @@ type InterpreterFrameInfo = {
     CurrentInstruction: Mono.Cecil.Cil.Instruction
 }
 
-type InterpreterFrameDispatcher = InterpreterFrameInfo clist -> (unit -> Task<ExecutionState>) -> Task<ExecutionState>
+type InterpreterFrameDispatcher = InterpreterFrameInfo clist -> (unit -> Task<ExecutionState * InterpreterReturnType>) -> Task<ExecutionState * InterpreterReturnType>
 
 type ExecutionCacheEntry = {
     ArgParameters: SParameter array
@@ -49,13 +54,15 @@ type InstructionPrefixes = {
 let noPrefixes = { Constained = None; InstructionPrefixes.NoCheck = false; ReadOnly = false; Tail = false; Unaligned = false; Volatile = true }
 
 let private runAndMerge todoFunctions dispatchFrame =
-    let result :Task<ExecutionState []> = Task.WhenAll<ExecutionState>(todoFunctions |> Seq.map (dispatchFrame))
+    let result :Task<(ExecutionState * InterpreterReturnType) []> = Task.WhenAll<ExecutionState * InterpreterReturnType>(todoFunctions |> Seq.map (dispatchFrame))
 
     task {
         let! r = result
         return match r with
                | [| x |] -> x
-               | [| x; y |] -> mergeStates x y
+               | [| (x, r1); (y, r2) |] ->
+                    softAssert (r1 = r2) "Merging state with different control flow result, something is wrong"
+                    mergeStates x y, r1
                | _ -> failwithf "NIE: merge %d states" r.Length
         // TODO: merge more than two states
     }
@@ -122,13 +129,13 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         let cSimpl = SExpr.InstructionCall InstructionFunction.Convert (CecilTools.boolType) [ condition ] |> ExprSimplifier.simplify state.Assumptions
         // printfn "Branching at %O if %s -> %s" instr (ExprFormat.exprToString condition) (ExprFormat.exprToString cSimpl)
         if cSimpl.Node = SExprNode.Constant true then
-            InterpretationResult.Branching [{ InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CurrentMethod (instr.Operand :?> Cil.Instruction, false) }]
+            InterpretationResult.Branching [{ InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CurrentMethod (instr.Operand :?> Cil.Instruction) }]
         elif cSimpl.Node = SExprNode.Constant false then
             InterpretationResult.NewState state
         else
             InterpretationResult.Branching [
-                { InterpreterTodoItem.State = state.WithCondition [ cSimpl ]; Target = InterpreterTodoTarget.CurrentMethod (unbox instr.Operand, false) }
-                { InterpreterTodoItem.State = state.WithCondition [ SExpr.BoolNot cSimpl ]; Target = InterpreterTodoTarget.CurrentMethod (instr.Next, false) }
+                { InterpreterTodoItem.State = state.WithCondition [ cSimpl ]; Target = InterpreterTodoTarget.CurrentMethod (unbox instr.Operand) }
+                { InterpreterTodoItem.State = state.WithCondition [ SExpr.BoolNot cSimpl ]; Target = InterpreterTodoTarget.CurrentMethod instr.Next }
             ]
     let doBranchWithCond opcode i2 =
         let state2 = match interpretInstruction genericAssigner (i2, noPrefixes) (locals, arguments) state with InterpretationResult.NewState s -> s | _ -> failwith "wtf"
@@ -144,10 +151,10 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
             InterpretationResult.NewState { state with Stack = rest; Locals = state.Locals.SetItem(p, stackConvert a p.Type) }
         | _ -> failwithf "Can't pop a value from stack at %O" instr
 
-    let loadIndirect expectedType =
+    let loadIndirect expectedTypes =
         let [addr], state = state.PopStack 1
         let result, state = dereference addr state
-        if expectedType <> Some result.ResultType && expectedType <> None then failwithf "Can't load dereference to %O, %O was expected" result.ResultType expectedType
+        if expectedTypes <> [] && not (List.contains result.ResultType expectedTypes) then failwithf "Can't load dereference to %O, one of %O was expected" result.ResultType expectedTypes
         InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
 
     let typeOperand = lazy TypeRef ((instr.Operand :?> TypeReference).ResolvePreserve(genericAssigner))
@@ -348,17 +355,17 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Stloc_2 then setLocal (locals.[2])
     elif op = OpCodes.Stloc_3 then setLocal (locals.[3])
 
-    elif op = OpCodes.Ldind_I1 then loadIndirect (Some (CecilTools.convertType typeof<SByte>))
-    elif op = OpCodes.Ldind_U1 then loadIndirect (Some (CecilTools.convertType typeof<Byte>))
-    elif op = OpCodes.Ldind_I2 then loadIndirect (Some (CecilTools.convertType typeof<Int16>))
-    elif op = OpCodes.Ldind_U2 then loadIndirect (Some (CecilTools.convertType typeof<UInt16>))
-    elif op = OpCodes.Ldind_I4 then loadIndirect (Some (CecilTools.convertType typeof<Int32>))
-    elif op = OpCodes.Ldind_U4 then loadIndirect (Some (CecilTools.convertType typeof<UInt32>))
-    elif op = OpCodes.Ldind_I8 then loadIndirect (None) // it can load uint64 using this instruction too
-    elif op = OpCodes.Ldind_R4 then loadIndirect (Some (CecilTools.convertType typeof<Single>))
-    elif op = OpCodes.Ldind_R8 then loadIndirect (Some (CecilTools.convertType typeof<float>))
-    elif op = OpCodes.Ldind_Ref then loadIndirect None // may load any reference type
-    elif op = OpCodes.Ldind_I then loadIndirect (Some (CecilTools.nintType))
+    elif op = OpCodes.Ldind_I1 then loadIndirect [CecilTools.convertType typeof<SByte>]
+    elif op = OpCodes.Ldind_U1 then loadIndirect [CecilTools.convertType typeof<Byte>; CecilTools.boolType]
+    elif op = OpCodes.Ldind_I2 then loadIndirect [CecilTools.convertType typeof<Int16>]
+    elif op = OpCodes.Ldind_U2 then loadIndirect [CecilTools.convertType typeof<UInt16>]
+    elif op = OpCodes.Ldind_I4 then loadIndirect [CecilTools.convertType typeof<Int32>]
+    elif op = OpCodes.Ldind_U4 then loadIndirect [CecilTools.convertType typeof<UInt32>]
+    elif op = OpCodes.Ldind_I8 then loadIndirect [CecilTools.convertType typeof<UInt64>; CecilTools.convertType typeof<Int64>] // it can load uint64 using this instruction too
+    elif op = OpCodes.Ldind_R4 then loadIndirect [CecilTools.convertType typeof<Single>]
+    elif op = OpCodes.Ldind_R8 then loadIndirect [CecilTools.convertType typeof<float>]
+    elif op = OpCodes.Ldind_Ref then loadIndirect [] // may load any reference type
+    elif op = OpCodes.Ldind_I then loadIndirect [CecilTools.nintType]
 
     elif op = OpCodes.Newobj then
         // TODO: Delegates
@@ -446,14 +453,31 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         let r, state = StateProcessing.accessLength target state
         InterpretationResult.NewState ({state with Stack = stackLoadConvert r :: state.Stack})
 
+    elif op = OpCodes.Leave || op = OpCodes.Leave_S then
+        InterpretationResult.ExitExceptionHandler (state, Some(instr.Operand :?> _))
+    elif op = OpCodes.Endfinally then
+        InterpretationResult.ExitExceptionHandler (state, None)
+
     else tooComplicated <| sprintf "unsupported instruction %O" instr
+
+let initializeExceptionHandler (handler: ExceptionHandler) (state: ExecutionState) =
+    softAssert (state.Stack.IsEmpty) "Stack has to be empty when exception handler starts"
+    let state2 = state.WithCondition []
+    state2
+
+let private takeInterpretationReturnState (t: Task<ExecutionState * InterpreterReturnType>) =
+    task {
+        let! (r, target) = t
+        softAssert (target = NextMethod) "something's wrong with control-flow"
+        return r
+    }
+
 
 let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args: SExpr array) (dispatchFrame: InterpreterFrameDispatcher) =
     let methodDef = methodref.Definition
     let method = methodref.Reference
     let genericAssigner = methodref.GenericParameterAssigner
     assertOrComplicated (methodDef.Body <> null) "method does not have body"
-    assertOrComplicated (methodDef.Body.ExceptionHandlers.Count = 0) "there are exception handlers" // TODO
     assertOrComplicated (not method.HasGenericParameters) "method contains unbound generic parameters"
     let allParameters = Seq.append (if methodDef.IsStatic then [] else [methodDef.Body.ThisParameter]) method.Parameters |> IArray.ofSeq
     softAssert (methodDef.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id) "variable indices don't fit"
@@ -469,6 +493,8 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
         IO.Directory.CreateDirectory "dasm" |> ignore
         IO.File.WriteAllLines("dasm/" + methodDef.FullName.Replace("/", "_") + ".il", methodDef.Body.Instructions |> Seq.map (sprintf "\t%O"))
     with _ -> ()
+
+    let tryStarts = methodDef.Body.ExceptionHandlers |> Seq.map (fun h -> h.TryStart) |> Collections.Generic.HashSet
 
     let locals = methodDef.Body.Variables
                  |> IArray.ofSeq
@@ -494,7 +520,9 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
         else
             match interpretInstruction genericAssigner (i, prefixes) (locals, parameters) state with
             | InterpretationResult.NewState state ->
-                interpretBlock noPrefixes i.Next state
+                if tryStarts.Contains i.Next then
+                    InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.ExceptionHandlerEntry i.Next } ]
+                else interpretBlock noPrefixes i.Next state
             | a -> a
     let mutable branchCount = 0
     let rec interpretFrom i state cycleDetection =
@@ -503,7 +531,10 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
         | InterpretationResult.NewState _ -> assert false; failwith "wtf"
         | InterpretationResult.Return newState ->
             softAssert (LanguagePrimitives.PhysicalEquality newState.Parent state.Parent) "Can't change parent by interpreting"
-            Task.FromResult newState
+            Task.FromResult (newState, NextMethod)
+        | InterpretationResult.ExitExceptionHandler (newState, target) ->
+            softAssert (LanguagePrimitives.PhysicalEquality newState.Parent state.Parent) "Can't change parent by interpreting an exception handler"
+            Task.FromResult (newState, LeaveExceptionHandler target)
         | InterpretationResult.Branching todoItems ->
             let cycleDetection =
                 if todoItems.Length > 1 then
@@ -523,8 +554,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                 |> IArray.ofSeq
                 |> IArray.map (fun t ->
                     match t.Target with
-                    | InterpreterTodoTarget.CurrentMethod (i, leave) ->
-                        assertOrComplicated (not leave) "Contains leave instruction" //TODO exceptions
+                    | InterpreterTodoTarget.CurrentMethod i ->
                         // printfn "Jumping to '%O', with condition %A" i (List.ofSeq t.State.Conditions |> List.map ExprFormat.exprToString)
                         fun () -> interpretFrom i t.State cycleDetection
                     | InterpreterTodoTarget.CallMethod (m, args, returnI, virt) ->
@@ -539,8 +569,84 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                             let resultState = { resultState with Stack = List.append resultState.Stack savedStack }
                             match returnI with
                             | Some returnI -> return! interpretFrom returnI resultState cycleDetection
-                            | None -> return resultState
+                            | None -> return (resultState, NextMethod)
                         }
+                    | InterpreterTodoTarget.ExceptionHandlerEntry i ->
+                        let handlers = methodDef.Body.ExceptionHandlers |> Seq.filter (fun h -> h.TryStart = i)
+                        printfn "Doing some exception handler at %O" methodref
+                        assertOrComplicated (handlers |> Seq.forall (fun h -> h.HandlerType = ExceptionHandlerType.Finally)) "Encountered handler other that finally"
+                        softAssert t.State.Stack.IsEmpty "Stack has to be empty when exception handler block starts"
+                        let initState = t.State.WithCondition []
+                        initState.AssertSomeInvariants() |> ignore
+                        let unwindToParent state =
+                            let tState = state.Parent.Value
+                            softAssert (tState = t.State) "Parent is wrong"
+                            softAssert (tState.Conditions.IsEmpty) "Parent is wrong"
+                            { tState with
+                                     Assumptions = state.Assumptions
+                                     ChangedHeapObjects = List.append state.ChangedHeapObjects tState.ChangedHeapObjects
+                                     Locals = state.Locals
+                                     SideEffects = tState.SideEffects.AddRange state.SideEffects
+                                     Stack = state.Stack
+                                      }
+                        fun () -> task {
+                            let! (tryState, LeaveExceptionHandler (Some tryTarget)) = interpretFrom i initState cycleDetection
+                            softAssert tryState.Stack.IsEmpty "Stack has to be empty when try block ends"
+                            let touchedLocals = initState.Locals
+                                                |> Seq.filter (fun l -> not <| LanguagePrimitives.PhysicalEquality tryState.Locals.[l.Key] l.Value)
+                            let touchedObjectFields = initState.ChangedHeapObjects
+                                                      |> Seq.choose (fun o ->
+                                                            match (initState.Assumptions.Heap.TryGet o, tryState.Assumptions.Heap.TryGet o) with
+                                                            | (Some a, Some b) -> a.Fields
+                                                                                  |> Seq.filter (fun (KeyValue(f, value)) -> not <| LanguagePrimitives.PhysicalEquality value (b.Fields.GetValueOrDefault f))
+                                                                                  |> Seq.map (fun (KeyValue(f, _)) -> f)
+                                                                                  |> fun a -> Some (o, a)
+                                                            | _ -> None
+                                                      )
+                            let handlerStartingState =
+                                let changedObjects = touchedObjectFields |> Seq.map (fun (o,fields) ->
+                                    let object = initState.Assumptions.Heap.[o]
+                                    o, { object with Fields = object.Fields.SetItems(fields |> Seq.map (fun f -> KeyValuePair(f, SExpr.Undecidable f.FieldType))) })
+                                { initState with Locals = initState.Locals.SetItems(touchedLocals |> Seq.map (fun (KeyValue(k, _)) -> KeyValuePair(k, SExpr.Undecidable k.Type)))
+                                                 Assumptions = { initState.Assumptions with Heap = initState.Assumptions.Heap.SetItems (changedObjects |> Seq.map KeyValuePair) } }.AssertSomeInvariants()
+                            let handler = Seq.exactlyOne handlers // TODO: how multiple handlers starting at the same position work?
+                            let isTryExceptionSafe =
+                                // if the try block does not contain any sode-effect we are allowed to reorder everything out of the try block anyway
+                                tryState.SideEffects.IsEmpty
+                            if isTryExceptionSafe then
+                                return! interpretFrom tryTarget (unwindToParent tryState) cycleDetection // ignore the finally block altogether and continue
+                            else
+
+                            let! (handlerState, LeaveExceptionHandler None) = interpretFrom handler.HandlerStart handlerStartingState cycleDetection
+
+                            let isHandlerEmpty =
+                                // I'm not interested in changes of local variables, since they could only be observed from other exception handlers, but they are undecidable here anyway
+                                handlerState.SideEffects.IsEmpty &&
+                                handlerState.ChangedHeapObjects |> Seq.forall (fun o -> initState.Assumptions.Heap.ContainsKey o |> not)
+                            if isHandlerEmpty then
+                                // simply execute the finally handler after the try-block (it may still change locals)
+                                let! (afterHandler, LeaveExceptionHandler None) = interpretFrom handler.HandlerStart tryState cycleDetection
+                                softAssert afterHandler.Stack.IsEmpty "Stack has to be empty when finally block ends"
+                                afterHandler.AssertSomeInvariants() |> ignore
+                                return! interpretFrom handler.HandlerEnd (unwindToParent afterHandler) cycleDetection
+                            else
+
+                            let clearedHandlerState =
+                                let safeLocals = touchedLocals |> Seq.filter (fun (KeyValue (l, _)) -> LanguagePrimitives.PhysicalEquality (handlerStartingState.Locals.[l]) (handlerState.Locals.[l]))
+                                let safeObjFields =
+                                    touchedObjectFields |> Seq.map (fun (o, fields) ->
+                                        let (oa, ob) = handlerStartingState.Assumptions.Heap.[o], handlerState.Assumptions.Heap.[o]
+                                        o, (fields |> Seq.filter (fun f -> LanguagePrimitives.PhysicalEquality (oa.Fields.GetValueOrDefault f) (ob.Fields.GetValueOrDefault f)))
+                                    )
+                                let revertedObjects = safeObjFields |> Seq.map (fun (o,fields) ->
+                                    let object = handlerState.Assumptions.Heap.[o]
+                                    o, { object with Fields = object.Fields.SetItems(fields |> Seq.map (fun f -> KeyValuePair(f, initState.Assumptions.Heap.[o].Fields.[f]))) })
+
+                                { handlerState with Locals = handlerState.Locals.SetItems(safeLocals |> Seq.map (fun (KeyValue(k, _)) -> KeyValuePair(k, initState.Locals.[k])))
+                                                    Assumptions = { handlerState.Assumptions with Heap = handlerState.Assumptions.Heap.SetItems (revertedObjects |> Seq.map KeyValuePair) } }
+                            return failwithf "NIE" // TODO: introduce a try-finally side-effect
+                        }
+
                 )
             runAndMerge todoFunctions (dispatchFrame [ { frameInfo with CurrentInstruction = i; BranchingFactor = todoFunctions.Length } ])
 
@@ -549,7 +655,12 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
     // printfn "interpreting method %s" (method.FullName)
     // instructions |> Seq.iter (printfn "\t%O")
 
-    interpretFrom instructions.[0] state []
+    // a little hack for try block starting at the first instruction
+    // traditionally the interpretFrom is not triggered by the try block when it starts at the first instruction, so that it can be invoked when the block is starting
+    let startNopInstruction = Cil.Instruction.Create(OpCodes.Nop)
+    startNopInstruction.Next <- instructions.[0]
+
+    interpretFrom startNopInstruction state [] |> takeInterpretationReturnState
 
 /// Cache of functions executed in full generality (from empty execution state and general parameters)
 and private intCache : ConcurrentDictionary<MethodRef, Task<ExecutionCacheEntry>> = ConcurrentDictionary()
@@ -564,8 +675,13 @@ and private getPreinterpretedMethod (method: MethodRef) =
         Task.FromResult({ ExecutionCacheEntry.ArgParameters = array<_>.Empty; DefiniteStates = array<_>.Empty })
 
 and interpretMethod (method: MethodRef) (state: ExecutionState) (args: seq<SExpr>) (dispatcher: InterpreterFrameDispatcher) =
+    let args = IArray.ofSeq args
+    let nestedDispatcher = fun f -> dispatcher ({ InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = 1; CurrentInstruction = null } :: f)
     softAssert (state.Stack.IsEmpty) "Stack needs to be empty"
     let resultAsserts result =
+        // check that the method does not introduce new undecidables into the system
+        if args |> Seq.forall (fun a -> not a.IsUndecidable) then
+            assertOrComplicated (result.Stack |> List.forall (fun e -> match e.Node with SExprNode.InstructionCall (InstructionFunction.Undecidable, _, _) -> false | _ -> true)) "Method returns undecidable value"
         softAssert (System.Object.ReferenceEquals(result.Parent, state.Parent)) "State parent needs to be the same"
         if method.ReturnType.FullName = "System.Void" then
             softAssert (result.Stack.Length = 0) <| sprintf "%O - void method returns %d vals." method result.Stack.Length
@@ -576,7 +692,7 @@ and interpretMethod (method: MethodRef) (state: ExecutionState) (args: seq<SExpr
 
         try
             // printfn "Interpreting %O" method
-            let! result = interpretMethodCore method state (IArray.ofSeq args) dispatcher
+            let! result = interpretMethodCore method state (IArray.ofSeq args) nestedDispatcher
             resultAsserts result
             return result
         with
@@ -611,21 +727,21 @@ and interpretVirtualMethod method state args dispatcher =
             let args = args.SetItem(0, castTarget args.[0])
             if isVirtual then
                 // not devirtualizable -> side effect
-                fun () -> addCallSideEffect method (getMethodSideEffectInfo method) args (*virt*)true forkedState |> Task.FromResult
+                fun () -> (addCallSideEffect method (getMethodSideEffectInfo method) args (*virt*)true forkedState, NextMethod) |> Task.FromResult
             else
-                fun () -> interpretMethod method forkedState args dispatcher
+                fun () -> (task { let! r = interpretMethod method forkedState args dispatcher in return r, NextMethod })
         )
     if states.Count = 1 then softAssert (LanguagePrimitives.PhysicalEquality states.[0].Parent state.Parent) "One forked state can't have a different parent"
     else
         softAssert (states |> Seq.forall (fun s -> s.Parent.IsSome)) "Forked states must have a parent"
         softAssert (states |> Seq.forall (fun s -> LanguagePrimitives.PhysicalEquality s.Parent.Value.Parent state.Parent)) "Forked states must be grandchildren of current parent"
-    runAndMerge jobs (dispatcher [ { InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = devirtTargets.Length; CurrentInstruction = null } ])
+    runAndMerge jobs (dispatcher [ { InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = devirtTargets.Length; CurrentInstruction = null } ]) |> takeInterpretationReturnState
 
 
 let createDispatcher logger : InterpreterFrameDispatcher =
     fun frameInfo fn ->
         logger frameInfo
-        Task.Run<ExecutionState>(fun () -> fn ())
+        Task.Run<ExecutionState * InterpreterReturnType>(fun () -> fn ())
 
 let createSynchronousDispatcher logger : InterpreterFrameDispatcher =
     fun frameInfo fn ->
