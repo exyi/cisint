@@ -46,6 +46,7 @@ let stackConvert (expr: SExpr) (targetType: TypeRef) =
     elif targetType.FullName = "System.Array" && expr.ResultType.Reference.IsArray then
         SExpr.Cast InstructionFunction.Cast targetType expr
     else
+        assertOrComplicated (not expr.ResultType.Reference.IsPointer && not targetType.Reference.IsPointer) "Can't work with pointers (implicit conversion)"
         softAssert false <| sprintf "Can't do implicit stack conversion %O -> %O" expr.ResultType targetType
         failwith ""
 
@@ -207,86 +208,97 @@ let initLocals (p: #seq<SParameter>) (state: ExecutionState) =
     let state = state.ChangeObject (Seq.collect snd m)
     { state with Locals = state.Locals.AddRange(Seq.map fst m) }
 
-let mergeArrays a b =
-    failwith "NotSupported"
 
-
-
-let mergeStates a b =
-    softAssert (a.Parent = b.Parent) "Merged states need to have the same parent"
-    softAssert (a.Parent.IsSome) "Merged state need to have a parent"
-    let parent = a.Parent.Value
-    let condition = a.Conditions |> Seq.reduce SExpr.BoolAnd
-    // let conditions_b = b.Conditions
-    let changedObjects =
-        Seq.append a.ChangedHeapObjects b.ChangedHeapObjects |> Seq.distinct |> Seq.map (fun op ->
-            match (a.Assumptions.Heap.TryGetValue op, b.Assumptions.Heap.TryGetValue op) with
-            | ((true, obj_a), (true, obj_b)) ->
-                softAssert (obj_a.Type = obj_b.Type) "Types have changed in different branches" // TODO: type changes
-                let combined =
-                    { HeapObject.Type = obj_a.Type
-                      TypeIsDefinite = obj_a.TypeIsDefinite && obj_b.TypeIsDefinite
-                      IsShared = if obj_a.IsShared = obj_b.IsShared then obj_a.IsShared
-                                 else SExpr.Condition condition obj_a.IsShared obj_b.IsShared |> ExprSimplifier.simplify AssumptionSet.empty
-                      Fields =
-                        obj_a.Fields.SetItems(obj_a.Fields |> Seq.map (fun (KeyValue(f, p_a)) ->
-                            let p_b = obj_b.Fields.[f]
-                            if p_b = p_a then KeyValuePair(f, p_a)
-                            else KeyValuePair(f, SExpr.Condition condition p_a p_b |> ExprSimplifier.simplify AssumptionSet.empty)
-                        ))
-                      Array = match (obj_a.Array, obj_b.Array) with
-                                | (None, None) -> None
-                                | (Some arr_a, Some arr_b) -> Some (mergeArrays arr_a arr_b)
-                                | _ -> softAssert false "Merging array with non-array"; failwith ""
-                    }
-                op, combined
-            | ((true, o), _) | (_, (true, o)) ->
-                op, o
-            | _ -> waitForDebug (); failwithf "wtf, %s was in the changed objects but not on heap." op.Name
-        ) |> IArray.ofSeq
-
-    let locals =
-        parent.Locals.SetItems (
-            parent.Locals
-            |> Seq.choose (fun (KeyValue(loc, value)) ->
-                let v_a = a.Locals.[loc]
-                let v_b = b.Locals.[loc]
-                if System.Object.ReferenceEquals(v_a, v_b) || v_a = v_b then
-                    if System.Object.ReferenceEquals(v_a, value) || v_a = value then None else Some(KeyValuePair(loc, v_a))
-                else
-                    Some(KeyValuePair(loc, SExpr.Condition condition v_a v_b |> ExprSimplifier.simplify AssumptionSet.empty))
+/// combines (condition * expression) list into a conditional exception
+let private mergeBranches (branches: (SExpr * SExpr) seq) =
+    let groups = branches |> Seq.groupBy snd |> Seq.toArray
+    if groups.Length = 1 then
+        fst groups.[0]
+    else
+        let groupedBranches = groups
+                              |> Seq.map (fun (value, conditions) ->
+                                   let condition = conditions |> Seq.map fst |> Seq.reduce SExpr.BoolAnd
+                                   condition, value
+                              )
+        groupedBranches |> Seq.reduce (fun (_, a) (c, b) ->
+            c, SExpr.Condition c b a
+        ) |> snd
+let private mergeObjects (objects: (SExpr * HeapObject) clist) =
+    let objType = objects |> Seq.map (fun (_, o) -> o.Type) |> Seq.distinct |> Seq.exactlyOne // TODO: type changes
+    let combined =
+        { HeapObject.Type = objType
+          TypeIsDefinite = objects |> Seq.forall (fun (_, o) -> o.TypeIsDefinite)
+          IsShared = objects |> Seq.map (fun (c, o) -> c, o.IsShared) |> mergeBranches |> ExprSimplifier.simplify AssumptionSet.empty
+          Fields =
+            let fields =
+                objects
+                |> Seq.collect (fun (_, o) -> o.Fields.Keys)
+                |> Seq.distinct
+            objects.[0].Item2.Fields.SetItems(fields |> Seq.map (fun field ->
+                let value =
+                    objects
+                    |> Seq.choose (fun (c, o) -> o.Fields.TryGet field |> Option.map (fun v -> c, v))
+                    |> mergeBranches |> ExprSimplifier.simplify AssumptionSet.empty
+                KeyValuePair (field, value)
             ))
-
-    softAssert (a.Stack.Length = b.Stack.Length) "Stack has different length in different branches"
+          Array =
+            softAssert (objects |> Seq.forall (fun (_, o) -> o.Array.IsNone)) "Merging arrays is not implemented" // TODO:
+            None
+        }
+    combined
+let mergeStates (states: ExecutionState seq) =
+    let states = IArray.ofSeq states
+    softAssert (states.Length > 0) "There has to be some states"
+    let parent = states |> Seq.map (fun s -> s.Parent) |> Utils.getOnlyElement |> Option.bind id |> Utils.optionExpect "Merged states must have the same parent"
+    let conditions = states |> IArray.map (fun a -> a.Conditions |> Seq.reduce SExpr.BoolAnd)
+    let changedObjects =
+        states
+        |> Seq.collect (fun s -> s.ChangedHeapObjects)
+        |> Seq.distinct
+        |> Seq.map (fun op ->
+            let objectsFromHeaps = Seq.zip conditions states
+                                   |> Seq.choose (fun (cond, s) ->
+                                        s.Assumptions.Heap.TryGet op |> Option.map (fun o -> cond, o))
+                                   |> Seq.toList
+            match objectsFromHeaps with
+            | [] -> softAssert false (sprintf "wtf, %s was in the changed objects but not on heap." op.Name); failwith ""
+            | [_cond, o] -> op, o
+            | objects -> op, (mergeObjects objects)
+        ) |> IArray.ofSeq
+    let locals =
+        parent.Locals
+        |> Seq.choose (fun (KeyValue(loc, value)) ->
+            let newValue = states |> Seq.map2 (fun cond state -> cond, state.Locals.[loc]) conditions |> mergeBranches |> ExprSimplifier.simplify parent.Assumptions
+            if LanguagePrimitives.PhysicalEquality newValue value || newValue = value then
+                None
+            else Some (KeyValuePair(loc, newValue))
+        )
+        |> parent.Locals.SetItems
     let stack =
-        List.map2 (fun a b ->
-            if a = b then a
-            else SExpr.Condition condition a b |> ExprSimplifier.simplify AssumptionSet.empty)
-            a.Stack b.Stack
-
+        states
+        |> Seq.map (fun s -> s.Stack)
+        |> Seq.toList
+        |> List.transpose
+        |> List.map (Seq.zip conditions >> mergeBranches >> ExprSimplifier.simplify parent.Assumptions)
     let sideEffects =
         let commonEffects =
-            Seq.zip (Seq.rev a.SideEffects) (Seq.rev b.SideEffects)
-            |> Seq.takeWhile (fun (a, b) -> a = b)
-            |> Seq.map fst
-            |> Seq.toArray
-        let aEffects = Seq.take (a.SideEffects.Count - commonEffects.Length) (a.SideEffects) |> IArray.ofSeq
-        let bEffects = Seq.take (b.SideEffects.Count - commonEffects.Length) (b.SideEffects) |> IArray.ofSeq
+            List.transpose (states |> IArray.map (fun s -> List.rev (List.ofSeq s.SideEffects)) |> List.ofSeq)
+            |> Seq.take 0
+            |> Seq.takeWhile (Utils.getOnlyElement >> Option.isSome)
+            |> Seq.map Seq.head
+            |> Seq.toArray |> Array.rev
         seq {
-            if aEffects.Length > 0 then
-                yield (condition, SideEffect.Effects aEffects)
-            if bEffects.Length > 0 then
-                yield (SExpr.BoolNot condition |> ExprSimplifier.simplify AssumptionSet.empty, SideEffect.Effects bEffects)
+            for (a, condition) in Seq.zip states conditions do
+                let effects = Seq.take (a.SideEffects.Count - commonEffects.Length) (a.SideEffects) |> IArray.ofSeq
+                if effects.Length > 0 then
+                    yield (condition, SideEffect.Effects effects)
             yield! commonEffects
         }
-
-    { parent with
-        ChangedHeapObjects = List.append  (Seq.map fst changedObjects |> List.ofSeq) parent.ChangedHeapObjects
-        Assumptions = AssumptionSet.changeObj changedObjects parent.Assumptions
+    { parent.ChangeObject changedObjects with
         Stack = stack
         Locals = locals
         SideEffects = parent.SideEffects.AddRange(sideEffects)
-    }.AssertSomeInvariants()
+    }
 
 /// Returns an array of Condition * Result Type tuples, used for devirtualization and type check reduction
 let rec analyseReturnType (expr: SExpr) state =
@@ -663,7 +675,8 @@ let readLValue (expr: SLExprNode) (state: ExecutionState) =
 let dereference (expr: SExpr) (state: ExecutionState) =
     match expr.Node with
     | SExprNode.Reference lv -> readLValue lv state
-    | _ -> failwithf "Can't deref"
+    | _ ->
+        tooComplicated (sprintf "Can't deref node %O" expr)
 
 let rec makeReference (expr: SExpr) =
     match expr.Node with

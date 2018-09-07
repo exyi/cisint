@@ -25,6 +25,8 @@ open System.Collections.Generic
 open System.Collections.Generic
 open Mono.Cecil.Cil
 open System.Collections.Generic
+open System.Runtime.CompilerServices
+open Mono.Cecil.Cil
 
 type InterpreterFrameInfo = {
     FrameToken: obj
@@ -59,11 +61,11 @@ let private runAndMerge todoFunctions dispatchFrame =
     task {
         let! r = result
         return match r with
+               | [||] -> failwithf "NIE: merge %d states" r.Length
                | [| x |] -> x
-               | [| (x, r1); (y, r2) |] ->
-                    softAssert (r1 = r2) "Merging state with different control flow result, something is wrong"
-                    mergeStates x y, r1
-               | _ -> failwithf "NIE: merge %d states" r.Length
+               | states ->
+                    softAssert (states |> Seq.map snd |> Seq.distinct |> Seq.length |> (=) 1) "Merging state with different control flow result, something is wrong"
+                    mergeStates (Array.map fst states), snd states.[0]
         // TODO: merge more than two states
     }
 
@@ -101,16 +103,16 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
             | a :: rest ->
                 fn a, rest
             | _ -> failwithf "Can't pop a value from stack at %O" instr
-        InterpretationResult.NewState ({ state with Stack = result :: rest })
+        InterpretationResult.NewState ({ state with Stack = stackLoadConvert result :: rest })
     let proc2stack (fn: SExpr -> SExpr -> SExpr) =
         let result, rest =
             match state.Stack with
             | b :: a :: rest ->
                 fn a b, rest
             | _ -> failwithf "Can't pop two values from stack at %O" instr
-        InterpretationResult.NewState ({ state with Stack = result :: rest })
+        InterpretationResult.NewState ({ state with Stack = stackLoadConvert result :: rest })
     let pushToStack (expr: SExpr) =
-        InterpretationResult.NewState ({ state with Stack = expr :: state.Stack })
+        InterpretationResult.NewState ({ state with Stack = stackLoadConvert expr :: state.Stack })
 
     let procArit fn =
         proc2stack (fun a b -> let (a, b) = stackArithmeticCoerce a b in fn a b)
@@ -313,6 +315,19 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         doBranchWithCond OpCodes.Brfalse (Cil.Instruction.Create(OpCodes.Ceq))
     elif op = OpCodes.Pop then
         InterpretationResult.NewState { state with Stack = List.tail state.Stack }
+
+    elif op = OpCodes.Switch then
+        let targets = instr.Operand :?> Instruction[]
+        let [value], state = state.PopStack 1
+        let conditions =
+            Seq.init targets.Length (fun index ->
+                SExpr.InstructionCall InstructionFunction.C_Eq CecilTools.boolType [ value; SExpr.Cast InstructionFunction.Convert value.ResultType (SExpr.ImmConstant index) ]
+            )
+        InterpretationResult.Branching (
+            Seq.zip targets conditions |> Seq.map (fun (target, cond) ->
+                { InterpreterTodoItem.State = state.WithCondition [cond]; Target = InterpreterTodoTarget.CurrentMethod target }
+            ) |> Seq.toList
+        )
 
     elif op = OpCodes.Call || op = OpCodes.Callvirt then
         let method = (instr.Operand :?> MethodReference).ResolvePreserve genericAssigner

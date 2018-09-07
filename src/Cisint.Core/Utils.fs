@@ -73,7 +73,7 @@ module IArray =
         i = array.Length
     let append (a: 'a array) (b: 'a array) =
         a.AddRange(b)
-    let ofSeq (a: seq<'a>) = ImmutableArray.CreateRange a
+    let ofSeq (a: #seq<'a>) = ImmutableArray.CreateRange a
 
 type ImmutableDictionary<'key, 'value> with
     member x.TryGet key =
@@ -98,6 +98,16 @@ let castAs<'T when 'T : null> (o:obj) =
 
 let justAnd a b = a && b
 let justOr a b = a || b
+
+let getOnlyElement (xs: #seq<'a>) =
+    let mutable result = None
+    if xs |> Seq.forall (fun x -> if result.IsNone then result <- Some x; true
+                                  else LanguagePrimitives.PhysicalEquality result.Value x || result.Value = x) then
+        result
+    else
+        None
+
+let optionExpect msg = function None -> failwithf "Option expectation failed: %s" msg | Some x -> x
 
 let waitForDebug () =
     if not(System.Diagnostics.Debugger.IsAttached) then
@@ -148,6 +158,9 @@ type TypeReference with
                 elif x.IsByReference then
                     let x = x :?> ByReferenceType
                     new Mono.Cecil.ByReferenceType(x.ElementType.ResolvePreserve(customMapping)) :> TypeReference
+                elif x.IsPointer then
+                    let x = x :?> PointerType
+                    new Mono.Cecil.PointerType(x.ElementType.ResolvePreserve customMapping) :> TypeReference
                 elif x.HasGenericParameters then
                     let p = x.GenericParameters |> Seq.map (fun p -> p.ResolvePreserve(customMapping)) |> Seq.toList
                     if Seq.toList (x.GenericParameters |> Seq.map (fun x -> x :> TypeReference)) <> p then
@@ -157,7 +170,9 @@ type TypeReference with
                         g :> _
                     else
                         x.TryResolve()
-                else x.TryResolve ()
+                else
+                    softAssert (List.contains (x.GetType ()) [typeof<TypeReference>; typeof<TypeDefinition>; typeof<GenericParameter>]) (sprintf "Can't work with Cecil types of type %O" (x.GetType()))
+                    x.TryResolve ()
 
 type MethodReference with
     member x.ResolvePreserve () = x.ResolvePreserve(fun _ -> None)
