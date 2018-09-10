@@ -39,13 +39,13 @@ let ``Mono.Cecil generics`` () =
 
     let method2 = t1.Methods |> Seq.find (fun m -> m.Name = "DoNothing")
     Assert.Equal("a Cisint.Tests.TestInputs.GenericType`1::DoNothing(a)", method2.FullName)
-    Assert.True(method2.ContainsGenericParameter)
+    Assert.True method2.ContainsGenericParameter
     Assert.Equal(MethodCallingConvention.Generic, method2.CallingConvention)
     Assert.True(method2.HasGenericParameters)
     Assert.Equal(1, method2.GenericParameters.Count)
     Assert.Equal("a", method2.GenericParameters.[0].FullName)
     Assert.True(method2.GenericParameters.[0].IsGenericParameter)
-    Assert.False(method2.IsVirtual)
+    Assert.False method2.IsVirtual
 
     let method3 = t1.Methods |> Seq.find (fun m -> m.Name = "ProcWithNothing")
     let callInstruction = method3.Body.Instructions |> Seq.find (fun i -> i.OpCode.OperandType = OperandType.InlineMethod)
@@ -55,7 +55,7 @@ let ``Mono.Cecil generics`` () =
     Assert.False(calledMethod.HasGenericParameters)
     Assert.Equal("!!0 Cisint.Tests.TestInputs.GenericType`1<x>::DoNothing<x>(!!0)", calledMethodResolved.FullName)
     Assert.True(calledMethodResolved.DeclaringType.GetElementType().IsDefinition)
-    Assert.False(calledMethod.HasGenericParameters)
+    Assert.False calledMethod.HasGenericParameters
 
 [<Fact>]
 let ``generics and TypeRefs``() =

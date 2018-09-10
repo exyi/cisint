@@ -2,6 +2,7 @@ namespace Cisint.Tests.TestInputs
 
 open Expression
 open System.Collections.Generic
+open System.Runtime.CompilerServices
 type TestRecord = {
     SomeProp: int
     AnotherProp: string Option
@@ -15,6 +16,7 @@ type GenericType<'x> when 'x : not struct = {
     Something: 'x
 } with
     member x.Contains b = LanguagePrimitives.PhysicalEquality x.Something b
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
     member x.DoNothing d = d
     member x.ProcWithNothing () = x.DoNothing x.Something
 
@@ -46,10 +48,12 @@ type Something = class
         with ex ->
             System.Console.WriteLine ex
             0
-
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
     static member SideEffect1 a =
         while true do ()
         (a + 1).ToString()
+
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
     static member SideEffect2 (a: string) =
         while true do ()
         a.Length
@@ -116,6 +120,20 @@ type Something = class
         finally
             Something.WithCondition a (a + 1) |> ignore
 
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
+    static member EffectOutObject (a: obj) =
+        while (System.Diagnostics.Debugger.IsAttached = not System.Diagnostics.Debugger.IsAttached) do ()
+        ()
+
+    static member LookAtIterator (a: int) =
+        let i = (Cisint.CsharpTestInputs.Class1.YieldSomeInts a).GetEnumerator ()
+        i.MoveNext () |> ignore
+        i.MoveNext () |> ignore
+        i.MoveNext () |> ignore
+        i.MoveNext () |> ignore
+        i.MoveNext () |> ignore
+        i.MoveNext () |> ignore
+        i.Current
     static member SumIterator (a: int) =
         Cisint.CsharpTestInputs.Class1.YieldSomeInts a |> Seq.sum
 end

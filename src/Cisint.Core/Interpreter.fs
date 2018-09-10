@@ -59,14 +59,9 @@ let private runAndMerge todoFunctions dispatchFrame =
     let result :Task<(ExecutionState * InterpreterReturnType) []> = Task.WhenAll<ExecutionState * InterpreterReturnType>(todoFunctions |> Seq.map (dispatchFrame))
 
     task {
-        let! r = result
-        return match r with
-               | [||] -> failwithf "NIE: merge %d states" r.Length
-               | [| x |] -> x
-               | states ->
-                    softAssert (states |> Seq.map snd |> Seq.distinct |> Seq.length |> (=) 1) "Merging state with different control flow result, something is wrong"
-                    mergeStates (Array.map fst states), snd states.[0]
-        // TODO: merge more than two states
+        let! states = result
+        softAssert (states |> Seq.map snd |> Seq.distinct |> Seq.length |> (=) 1) "Merging state with different control flow result, something is wrong"
+        return mergeStates (Array.map fst states), snd states.[0]
     }
 
 let stackArithmeticCoerce a b =
@@ -323,10 +318,12 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
             Seq.init targets.Length (fun index ->
                 SExpr.InstructionCall InstructionFunction.C_Eq CecilTools.boolType [ value; SExpr.Cast InstructionFunction.Convert value.ResultType (SExpr.ImmConstant index) ]
             )
+        let notCondition = conditions |> Seq.map SExpr.BoolNot |> Seq.reduce SExpr.BoolAnd
         InterpretationResult.Branching (
             Seq.zip targets conditions |> Seq.map (fun (target, cond) ->
-                { InterpreterTodoItem.State = state.WithCondition [cond]; Target = InterpreterTodoTarget.CurrentMethod target }
-            ) |> Seq.toList
+                { InterpreterTodoItem.State = state.WithCondition [ExprSimplifier.simplify state.Assumptions cond]; Target = InterpreterTodoTarget.CurrentMethod target }
+            ) |> Seq.toList |> List.append
+                [ { InterpreterTodoItem.State = state.WithCondition [ExprSimplifier.simplify state.Assumptions notCondition]; Target = InterpreterTodoTarget.CurrentMethod instr.Next } ]
         )
 
     elif op = OpCodes.Call || op = OpCodes.Callvirt then
@@ -566,6 +563,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
             // printfn "Branching in %O:" method
             let todoFunctions =
                 todoItems
+                |> Seq.filter (fun t -> t.State.Conditions |> IArray.forall ((<>) (SExpr.ImmConstant false)))
                 |> IArray.ofSeq
                 |> IArray.map (fun t ->
                     match t.Target with
@@ -663,7 +661,10 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                         }
 
                 )
-            runAndMerge todoFunctions (dispatchFrame [ { frameInfo with CurrentInstruction = i; BranchingFactor = todoFunctions.Length } ])
+            let dispatchNext = dispatchFrame [ { frameInfo with CurrentInstruction = i; BranchingFactor = todoFunctions.Length } ]
+            if todoItems.Length = 1 then
+                dispatchNext (todoFunctions |> Seq.exactlyOne)
+            else runAndMerge todoFunctions dispatchNext
 
     let instructions = methodDef.Body.Instructions
 
@@ -750,7 +751,10 @@ and interpretVirtualMethod method state args dispatcher =
     else
         softAssert (states |> Seq.forall (fun s -> s.Parent.IsSome)) "Forked states must have a parent"
         softAssert (states |> Seq.forall (fun s -> LanguagePrimitives.PhysicalEquality s.Parent.Value.Parent state.Parent)) "Forked states must be grandchildren of current parent"
-    runAndMerge jobs (dispatcher [ { InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = devirtTargets.Length; CurrentInstruction = null } ]) |> takeInterpretationReturnState
+    let dispatchNext = dispatcher [ { InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = devirtTargets.Length; CurrentInstruction = null } ]
+    if devirtTargets.Length = 1 then
+        dispatchNext (Seq.exactlyOne jobs) |> takeInterpretationReturnState
+    else runAndMerge jobs dispatchNext |> takeInterpretationReturnState
 
 
 let createDispatcher logger : InterpreterFrameDispatcher =

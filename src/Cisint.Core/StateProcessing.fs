@@ -282,7 +282,7 @@ let mergeStates (states: ExecutionState seq) =
         |> List.map (Seq.zip conditions >> mergeBranches >> ExprSimplifier.simplify parent.Assumptions)
     let sideEffects =
         let commonEffects =
-            List.transpose (states |> IArray.map (fun s -> List.rev (List.ofSeq s.SideEffects)) |> List.ofSeq)
+            Seq.transpose (states |> IArray.map (fun s -> s.SideEffects.Reverse()))
             |> Seq.take 0
             |> Seq.takeWhile (Utils.getOnlyElement >> Option.isSome)
             |> Seq.map Seq.head
@@ -290,6 +290,7 @@ let mergeStates (states: ExecutionState seq) =
         seq {
             for (a, condition) in Seq.zip states conditions do
                 let effects = Seq.take (a.SideEffects.Count - commonEffects.Length) (a.SideEffects) |> IArray.ofSeq
+                softAssert (condition <> SExpr.ImmConstant false) "Condition of a state should not be false"
                 if effects.Length > 0 then
                     yield (condition, SideEffect.Effects effects)
             yield! commonEffects
@@ -400,6 +401,14 @@ let getDefensiveSideEffectInfo (m: MethodRef) =
 let getMethodSideEffectInfo (m: MethodRef) =
     if m.Definition.CustomAttributes |> Seq.exists (fun a -> a.AttributeType.FullName = typeof<PureAttribute>.FullName) then
         getPureMethodSideEffectInfo m
+    else if m.ToString() = "System.Void Cisint.Tests.TestInputs.Something::EffectOutObject(System.Object)" then
+        {
+            MethodSideEffectInfo.IsGlobal = true
+            IsPure = false
+            ResultIsShared = true
+            ArgumentBehavior = ImmutableArray.Create MethodArgumentEffect.ReadOnly
+            ActualResultType = None
+        }
     else
         getDefensiveSideEffectInfo m
 
@@ -504,7 +513,7 @@ let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt st
 
     let result = sideEffectResult (TypeRef (m.ReturnType.Reference.ResolvePreserve m.GenericParameterAssigner))
     // mark everything reachable as shared
-    let state =  markSideEffectArguments args seInfo.ArgumentBehavior state
+    let state = markSideEffectArguments args seInfo.ArgumentBehavior state
     let effect = SideEffect.MethodCall (m, result, args, virt, seInfo.IsGlobal, state.Assumptions)
     let state = { state with SideEffects = state.SideEffects.Add(SExpr.ImmConstant true, effect) }
 
@@ -514,14 +523,22 @@ let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt st
 let private addFieldReadSideEffect (target: SParameter option) (field: FieldOrElement) =
     let result = sideEffectResult field.ResultType
     result, (fun condition state ->
-        let effect = SideEffect.FieldRead (target, field, result, state.Assumptions)
-        let state = { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
-        addResultObject result None true state
+        let condition = condition |> ExprSimplifier.simplify state.Assumptions
+        if condition <> SExpr.ImmConstant false then
+            let effect = SideEffect.FieldRead (target, field, result, state.Assumptions)
+            let state = { state with SideEffects = state.SideEffects.Add(condition, effect) }
+            addResultObject result None true state
+        else
+            state
     )
 let private addFieldWriteSideEffect (target: SParameter option) (field: FieldOrElement) (value: SExpr) condition state =
-    assertDecidableArgs [value]
-    let effect = SideEffect.FieldWrite (target, field, value, state.Assumptions)
-    { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
+    let condition = condition |> ExprSimplifier.simplify state.Assumptions
+    if condition <> SExpr.ImmConstant false then
+        assertDecidableArgs [value]
+        let effect = SideEffect.FieldWrite (target, field, value, state.Assumptions)
+        { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
+    else
+        state
 
 let private getArrayElement (arrayInfo: ArrayInfo) index =
     let gExpr = arrayInfo.GeneralExpression

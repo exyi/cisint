@@ -394,6 +394,7 @@ let private simplifyHardcoded (assumptions: AssumptionSet) (expr: SExpr) =
         SExpr.New resultType (SExprNode.Constant null)
     // expression in assumptions is true
     | _ when expr.ResultType = CecilTools.boolType && assumptions.Set.Contains expr -> SExpr.ImmConstant true
+    | _ when expr.ResultType = CecilTools.boolType && assumptions.Set.Contains (SExpr.BoolNot expr) -> SExpr.ImmConstant false
     | _ -> expr
 
 let private getExprBaseKey =
@@ -465,9 +466,23 @@ let rec private simplifyPatternsOneLevel (map: PatternMap) (assumptions: Assumpt
         expr
     else simplifyPatternsOneLevel map assumptions p
 
-let private simplifyExpressionCore (map: PatternMap) (assumptions: AssumptionSet) a =
+let rec private simplifyExpressionCore (map: PatternMap) (assumptions: AssumptionSet) a =
     // printfn "\t simplifying %s" (ExprFormat.exprToString a)
     SExpr.Visitor (fun expr visitChildren ->
+        let visitChildren expr =
+            match expr.Node with
+            | SExprNode.Condition (c, a, b) ->
+                let c = simplifyExpressionCore map assumptions c
+                if c = SExpr.ImmConstant true then
+                    simplifyExpressionCore map assumptions a
+                else if c = SExpr.ImmConstant false then
+                    simplifyExpressionCore map assumptions b
+                else
+                    SExpr.Condition c
+                        (simplifyExpressionCore map (AssumptionSet.add [c] assumptions) a)
+                        (simplifyExpressionCore map (AssumptionSet.add [SExpr.BoolNot c] assumptions) b)
+            | _ ->
+                visitChildren expr
         match expr.SimplificationVersion with
         | (AssumptionSetVersion a) when a < assumptions.Version.Num || a = -1L ->
             let expr_s = simplifyHardcodedM assumptions expr |> visitChildren |> simplifyHardcodedM assumptions
@@ -588,6 +603,12 @@ let defaultPatterns = [
     createPatternFromQuot
         [ typeof<bool> ]
         [ <@ fun a -> not (not a) @>; <@ fun a -> justOr a a @>; <@ fun a -> justAnd a a @>; <@ fun a -> a @> ]
+    createPatternFromQuot
+        [ typeof<bool> ]
+        [ <@ fun a -> justAnd a (not a) @>; <@ fun a -> justAnd (not a) a @>; <@ fun _ -> false @> ]
+    createPatternFromQuot
+        [ typeof<bool> ]
+        [ <@ fun a -> justOr a (not a) @>; <@ fun a -> justOr (not a) a @>; <@ fun _ -> true @> ]
 
     // generic if-conversions
     createPatternFromQuot
