@@ -154,6 +154,12 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         if expectedTypes <> [] && not (List.contains result.ResultType expectedTypes) then failwithf "Can't load dereference to %O, one of %O was expected" result.ResultType expectedTypes
         InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
 
+    let storeIndirect (state: ExecutionState) value =
+        let [addr], state = state.PopStack 1
+        if not addr.ResultType.Reference.IsByReference then
+            tooComplicated (sprintf "Can't store indirect to expression of type %O" addr.ResultType)
+        InterpretationResult.NewState (StateProcessing.setReference addr value state)
+
     let typeOperand = lazy TypeRef ((instr.Operand :?> TypeReference).ResolvePreserve(genericAssigner))
 
     let op = instr.OpCode
@@ -379,6 +385,14 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Ldind_Ref then loadIndirect [] // may load any reference type
     elif op = OpCodes.Ldind_I then loadIndirect [CecilTools.nintType]
 
+    elif op = OpCodes.Initobj then
+        let typeTok = (instr.Operand :?> Mono.Cecil.TypeReference).ResolvePreserve genericAssigner |> TypeRef
+        let newValue, objects =
+            StateProcessing.createDefaultValue typeTok
+        let state = state.ChangeObject objects
+        storeIndirect state newValue
+    // TODO: Stind
+
     elif op = OpCodes.Newobj then
         // TODO: Delegates
         let constructor = (instr.Operand :?> Mono.Cecil.MethodReference).ResolvePreserve genericAssigner
@@ -407,10 +421,10 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
     elif op = OpCodes.Ldflda then
         // the address is simply loaded as an expression. The magic is handled when it's dereferenced
         let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
-        proc1stack (fun e -> SExpr.New (Mono.Cecil.ByReferenceType(field.FieldType.Reference) |> TypeRef) (SExprNode.Reference (SLExprNode.LdField (field, Some e))))
+        proc1stack (fun e -> SExpr.New (TypeRef.CreateByref field.FieldType) (SExprNode.Reference (SLExprNode.LdField (field, Some e))))
     elif op = OpCodes.Ldsflda then
         let field = instr.Operand :?> Mono.Cecil.FieldReference |> FieldRef
-        pushToStack (SExpr.New (Mono.Cecil.ByReferenceType(field.FieldType.Reference) |> TypeRef) (SExprNode.Reference (SLExprNode.LdField (field, None))))
+        pushToStack (SExpr.New (TypeRef.CreateByref field.FieldType) (SExprNode.Reference (SLExprNode.LdField (field, None))))
 
     elif op = OpCodes.Stfld then
         let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
@@ -503,8 +517,12 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
 
     try
         IO.Directory.CreateDirectory "dasm" |> ignore
-        IO.File.WriteAllLines("dasm/" + methodDef.FullName.Replace("/", "_") + ".il", methodDef.Body.Instructions |> Seq.map (sprintf "\t%O"))
-    with _ -> ()
+        let filename = methodDef.FullName.Replace("/", "_")
+        let filename = if filename.Length > 200 then
+                            filename.Remove(200) + (string <| filename.GetHashCode())
+                       else filename
+        IO.File.WriteAllLines("dasm/" + filename + ".il", methodDef.Body.Instructions |> Seq.map (sprintf "\t%O"))
+    with e -> ()//printfn "Could not write out dasm of %O: %s" methodDef e.Message
 
     let tryStarts = methodDef.Body.ExceptionHandlers |> Seq.map (fun h -> h.TryStart) |> Collections.Generic.HashSet
 
@@ -550,6 +568,8 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
         | InterpretationResult.Branching todoItems ->
             let cycleDetection =
                 if todoItems.Length > 1 then
+                    if method.FullName = "Microsoft.FSharp.Collections.Generator/Generator`1<T> Microsoft.FSharp.Collections.Generator/GenerateThen`1<System.Int32>::Bind(Microsoft.FSharp.Collections.Generator/Generator`1<T>,Microsoft.FSharp.Core.FSharpFunc`2<Microsoft.FSharp.Core.Unit,Microsoft.FSharp.Collections.Generator/Generator`1<T>>)" then
+                        waitForDebug()
                     assertOrComplicated (not <| List.contains i.Offset cycleDetection) (sprintf "Method contains unbounded cycle in block %O" i)
                     i.Offset :: cycleDetection
                 else cycleDetection
@@ -587,7 +607,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                     | InterpreterTodoTarget.ExceptionHandlerEntry i ->
                         let handlers = methodDef.Body.ExceptionHandlers |> Seq.filter (fun h -> h.TryStart = i)
                         printfn "Doing some exception handler at %O" methodref
-                        assertOrComplicated (handlers |> Seq.forall (fun h -> h.HandlerType = ExceptionHandlerType.Finally)) "Encountered handler other that finally"
+                        assertOrComplicated (handlers |> Seq.forall (fun h -> h.HandlerType = ExceptionHandlerType.Finally)) "Encountered handler other than finally"
                         softAssert t.State.Stack.IsEmpty "Stack has to be empty when exception handler block starts"
                         let initState = t.State.WithCondition []
                         initState.AssertSomeInvariants() |> ignore

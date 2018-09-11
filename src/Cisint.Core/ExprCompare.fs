@@ -35,7 +35,9 @@ let compareObj (a: 'x) (b: 'x) =
 let rec exprCompare (a: SExpr) (b: SExpr) =
 
     if a.NodeLeavesRank <> b.NodeLeavesRank then
-        a.NodeLeavesRank.CompareTo(b.NodeLeavesRank)
+        a.NodeLeavesRank.CompareTo b.NodeLeavesRank
+    else if a.NodeRank <> b.NodeRank then
+        a.NodeRank.CompareTo b.NodeRank
     else
 
 

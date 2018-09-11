@@ -218,7 +218,7 @@ let private lossLessConversions =
             struct (CecilTools.nuintType, CecilTools.convertType typeof<System.UInt64>)
         ])
 let isDownCast (fromType: TypeRef) (toType: TypeRef) =
-    fromType.BaseTypeChain.Contains toType || fromType.Interfaces.Contains toType
+    fromType.BaseTypeChain.Contains toType || toType = CecilTools.objType || fromType.Interfaces.Contains toType
 let findCommonAncestor (a: TypeRef) (b: TypeRef) =
     let (cA, cB) = List.rev a.BaseTypeChain, List.rev b.BaseTypeChain
     Seq.init (min cA.Length cB.Length) (fun i -> (cA.[i], cB.[i])) |> Seq.tryFindBack (fun (a, b) -> a = b) |> Option.map fst
@@ -457,14 +457,14 @@ let rec private simplifyHardcodedM (assumptions: AssumptionSet) expr =
     if System.Object.ReferenceEquals(expr_t, expr) || expr_t = expr then
         expr
     else simplifyHardcodedM assumptions expr_t
-let rec private simplifyPatternsOneLevel (map: PatternMap) (assumptions: AssumptionSet) expr =
+let rec private simplifyPatternsOneLevel (map: PatternMap) (assumptions: AssumptionSet) expr limit =
     let p = execPatterns map expr
             //|> fun a -> printfn "\t\texecuting patterns for %s, got %d" (ExprFormat.exprToString expr_s) (Seq.length a); a
             |> Seq.append [expr]
             |> Seq.reduce (ExprCompare.exprMin)
-    if System.Object.ReferenceEquals(p, expr) || p = expr then
+    if System.Object.ReferenceEquals(p, expr) || p = expr || limit <= 0 then
         expr
-    else simplifyPatternsOneLevel map assumptions p
+    else simplifyPatternsOneLevel map assumptions p (limit - 1)
 
 let rec private simplifyExpressionCore (map: PatternMap) (assumptions: AssumptionSet) a =
     // printfn "\t simplifying %s" (ExprFormat.exprToString a)
@@ -486,19 +486,19 @@ let rec private simplifyExpressionCore (map: PatternMap) (assumptions: Assumptio
         match expr.SimplificationVersion with
         | (AssumptionSetVersion a) when a < assumptions.Version.Num || a = -1L ->
             let expr_s = simplifyHardcodedM assumptions expr |> visitChildren |> simplifyHardcodedM assumptions
-            Some (simplifyPatternsOneLevel map assumptions expr_s)
+            Some (simplifyPatternsOneLevel map assumptions expr_s 1)
         | _ ->
             Some expr
     ) a
 
-let rec private simplifyExpression map assumptions a =
+let rec private simplifyExpression map limit assumptions a =
     let s = simplifyExpressionCore map assumptions a
     // if ExprCompare.exprCompare s a > 0 then
     //     failwithf "WTF, %s was \"simplified\" into %s" (ExprFormat.exprToString a) (ExprFormat.exprToString s)
-    if System.Object.ReferenceEquals(s, a) || s = a then
+    if System.Object.ReferenceEquals(s, a) || s = a || limit <= 0 then
         s
     else
-        simplifyExpression map assumptions s
+        simplifyExpression map (limit - 1) assumptions s
 
 let private emptyPattern = SExpr.ImmConstant 1, {SimplifierPattern.EqExpressions = array<_>.Empty; TypeVars = array<_>.Empty; Variables = array<_>.Empty}
 
@@ -536,7 +536,7 @@ let rec private buildPatternMap (patterns: seq<SimplifierPattern>) =
             for (k, index, _) in exprKeys do
                 items.[k].[index] <- emptyPattern // remove the pattern itself in order to simplify it.
 
-            let expressions = p.EqExpressions |> IArray.map (simplifyExpression patternMap emptyAssumptions)
+            let expressions = p.EqExpressions |> IArray.map (simplifyExpression patternMap 2 emptyAssumptions)
 
             for (k, index, item) in exprKeys do
                 items.[k].[index] <- item
@@ -560,7 +560,7 @@ let extendPatterns (patterns: #seq<SimplifierPattern>) =
     pmap.PatternMap.Values |> Seq.concat |> Seq.map snd |> Seq.distinct
 let createSimplifier (patterns: #seq<SimplifierPattern>) =
     let pmap = buildPatternMap patterns
-    simplifyExpression pmap
+    simplifyExpression pmap 2
 
 let defaultPatterns = [
     createPatternFromQuot
@@ -620,6 +620,15 @@ let defaultPatterns = [
     createPatternFromQuot
         [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
         [ <@ fun a b -> if true then a else b @>; <@ fun a _ -> a @>; <@ fun a b -> if false then b else a @> ]
+    createPatternFromQuot
+        [ typeof<bool> ]
+        [ <@ fun c -> c @>; <@ fun c -> if c then true else false @>; <@ fun c -> if not c then false else true @> ]
+    createPatternFromQuot
+        [ typeof<bool>; typeof<bool> ]
+        [ <@ fun c a -> justAnd c a @>; <@ fun c a -> if c then a else false @>; <@ fun c a -> if not c then false else a @> ]
+    createPatternFromQuot
+        [ typeof<bool>; typeof<bool> ]
+        [ <@ fun c a -> justOr c a @>; <@ fun c a -> if c then true else a @>; <@ fun c a -> if not c then a else true @> ]
 
     // general comparison conversions
     createPatternFromQuot

@@ -5,9 +5,6 @@ open Expression
 open System
 open Xunit
 open System.Collections.Generic
-open Expression
-open Expression
-open System.Collections.Generic
 open InterpreterState
 open Cisint.Tests.TestInputs
 open TypesystemDefinitions
@@ -41,8 +38,8 @@ let ``expression comparison`` () =
     Assert.True(AssumptionSetVersion.None = AssumptionSetVersion.None, "wtf, they are not equal for F#")
     Assert.True(Microsoft.FSharp.Core.LanguagePrimitives.HashCompare.GenericEqualityERIntrinsic AssumptionSetVersion.None AssumptionSetVersion.None, "wtf, they are not equal for some magic function?")
     Assert.Equal(
-        { SExpr.Node = someParamNode; ResultType = paramA.Type; SimplificationVersion = AssumptionSetVersion.None; NodeCountRank = 1; NodeLeavesRank = 0 },
-        { SExpr.Node = someParamNode; ResultType = paramA.Type; SimplificationVersion = AssumptionSetVersion.None; NodeCountRank = 1; NodeLeavesRank = 0 }
+        { SExpr.Node = someParamNode; ResultType = paramA.Type; SimplificationVersion = AssumptionSetVersion.None; NodeRank = 1L; NodeLeavesRank = 0 },
+        { SExpr.Node = someParamNode; ResultType = paramA.Type; SimplificationVersion = AssumptionSetVersion.None; NodeRank = 1L; NodeLeavesRank = 0 }
     )
     Assert.True(SExpr.Parameter paramA = SExpr.Parameter paramA, "F# comparison says false")
     Assert.True(EqualityComparer.Default.Equals(SExpr.Parameter paramA, SExpr.Parameter paramA), ".NET comparison says false")
@@ -273,3 +270,11 @@ let ``not so generic overload resolution`` () =
     let m2 = StateProcessing.findOverridenMethod o2 m
     Assert.Equal(o2, m2.DeclaringType)
     Assert.Equal("System.Boolean Cisint.Tests.TestInputs.NotSoGenericType::Nothing(System.String)", m2.ToString())
+
+[<Fact>]
+let ``devirtualization on interface works`` () =
+    let param = SParameter.New (CecilTools.convertType typeof<System.Collections.ICollection>) ""
+    let moveNext = (CecilTools.convertType typeof<System.Collections.IEnumerable>).Methods |> Seq.find (fun m -> m.Reference.Name = "GetEnumerator")
+    let targets = StateProcessing.devirtualize moveNext (IArray.ofSeq [ SExpr.Cast InstructionFunction.Cast (CecilTools.convertType typeof<Collections.IEnumerable>) (SExpr.Parameter param) ]) ExecutionState.Empty
+    Assert.Equal(targets.Length, 1)
+    Assert.Equal(targets.[0], (SExpr.ImmConstant true, moveNext, true))

@@ -7,6 +7,7 @@ open System.Collections.Generic
 open System.Collections.Immutable
 open System.Diagnostics.Contracts
 open Mono.Cecil.Rocks
+open ExprSimplifier
 let rec stackLoadConvert (expr: SExpr) =
     let t = expr.ResultType
     if not t.IsPrimitive then
@@ -208,6 +209,15 @@ let initLocals (p: #seq<SParameter>) (state: ExecutionState) =
     let state = state.ChangeObject (Seq.collect snd m)
     { state with Locals = state.Locals.AddRange(Seq.map fst m) }
 
+let private createCondition (cond:SExpr) (a:SExpr) (b:SExpr) =
+    let a, b =
+        if a.ResultType = b.ResultType then a, b
+        else if isDownCast a.ResultType b.ResultType then SExpr.Cast InstructionFunction.Cast b.ResultType a, b
+        else if isDownCast b.ResultType a.ResultType then a, SExpr.Cast InstructionFunction.Cast a.ResultType b
+        else if a.ResultType.IsObjectReference && b.ResultType.IsObjectReference then
+            SExpr.Cast InstructionFunction.Cast CecilTools.objType a, SExpr.Cast InstructionFunction.Cast CecilTools.objType b
+        else failwithf "Can't implicitly create condition from expressions of type %O and %O" a.ResultType b.ResultType
+    SExpr.Condition cond a b
 
 /// combines (condition * expression) list into a conditional exception
 let private mergeBranches (branches: (SExpr * SExpr) seq) =
@@ -221,7 +231,7 @@ let private mergeBranches (branches: (SExpr * SExpr) seq) =
                                    condition, value
                               )
         groupedBranches |> Seq.reduce (fun (_, a) (c, b) ->
-            c, SExpr.Condition c b a
+            c, createCondition c b a
         ) |> snd
 let private mergeObjects (objects: (SExpr * HeapObject) clist) =
     let objType = objects |> Seq.map (fun (_, o) -> o.Type) |> Seq.distinct |> Seq.exactlyOne // TODO: type changes
@@ -301,7 +311,7 @@ let mergeStates (states: ExecutionState seq) =
         SideEffects = parent.SideEffects.AddRange(sideEffects)
     }
 
-/// Returns an array of Condition * Result Type tuples, used for devirtualization and type check reduction
+/// Returns an array of Condition * Result Type * Is Definite tuples, used for devirtualization and type check reduction
 let rec analyseReturnType (expr: SExpr) state =
     if expr.ResultType.IsPrimitive || expr.ResultType.Definition.IsSealed || expr.ResultType.Definition.IsValueType then
         [ SExpr.ImmConstant true, expr.ResultType, true ]
@@ -323,26 +333,24 @@ let rec analyseReturnType (expr: SExpr) state =
         List.append
             (analyseReturnType ifTrue state |> List.map (fun (c, e, d) -> ExprSimplifier.simplify state.Assumptions (SExpr.BoolAnd cond c), e, d))
             (analyseReturnType ifFalse state |> List.map (fun (c, e, d) -> ExprSimplifier.simplify state.Assumptions (SExpr.BoolAnd (SExpr.BoolNot cond) c), e, d))
-    | _ -> []
+    | _ -> [ SExpr.ImmConstant true, expr.ResultType, false ]
 
 let rec findOverridenMethod (t: TypeRef) (m: MethodRef) =
-    if TypeRef(m.Reference.DeclaringType) = t then
+    if TypeRef(m.Reference.DeclaringType) = t || t.Definition.IsInterface then
         m
     else
         let genericResolver = if t.Reference.IsGenericInstance then (fun (mm: Mono.Cecil.MethodReference) -> mm.RebaseOn(t.Reference).ResolvePreserve(t.GenericParameterAssigner).ResolvePreserve(m.GenericParameterAssigner)) else id
-        let methods = t.Definition.Methods
+        let methods = t.Methods
         let explicitOverride = methods |> Seq.tryFind (fun m2 ->
-            m2.Overrides |> Seq.exists (fun ovr -> MethodRef.AreSameMethods (genericResolver ovr) m.Reference))
+            m2.Overrides |> Seq.exists ((=) m))
         let matchedOverride () =
             methods
             |> Seq.filter (fun m2 -> m2.Name = m.Reference.Name && m.Reference.HasThis)
-            |> Seq.map (genericResolver >> MethodRef)
             |> Seq.tryFind (fun m2 -> (m2.ParameterTypes |> Seq.toList).Tail = (m.ParameterTypes |> Seq.toList).Tail)
         explicitOverride
-            |> Option.map (genericResolver >> MethodRef)
             |> Option.orElseWith matchedOverride
             |> Option.defaultWith (fun () ->
-                softAssert t.BaseType.IsSome <| sprintf "Can't find overriden method %O" m
+                softAssert t.BaseType.IsSome <| sprintf "Can't find overriden method %O on type %O" m t
                 findOverridenMethod t.BaseType.Value m)
 /// Returns devirtualization info - list of (condition, method called, if it's virtual)
 let devirtualize (m: MethodRef) (args: array<SExpr>) state =
@@ -351,10 +359,17 @@ let devirtualize (m: MethodRef) (args: array<SExpr>) state =
     else
 
     let targetTypes = analyseReturnType args.[0] state
-    [
-        for (condition, t, v) in targetTypes do
-            yield condition, findOverridenMethod t m, not (v || t.Definition.IsSealed || t.Definition.IsValueType)
-    ]
+                      |> List.map (fun (condition, t, definite) ->
+                          condition, findOverridenMethod t m, not (definite || t.Definition.IsSealed || t.Definition.IsValueType)
+                      )
+                      |> List.groupBy (fun (_c, m, d) -> m, d)
+    if targetTypes.Length = 1 then
+        targetTypes |> List.map (fun ((m, d), _) -> SExpr.ImmConstant true, m, d)
+    else
+        targetTypes |> List.map (fun ((m, d), branches) ->
+            let condition = branches |> List.map (fun (c, _, _) -> c) |> List.reduce SExpr.BoolOr
+            (condition, m, d)
+        )
 
 let private immutableTypes =
     Collections.Generic.HashSet([
@@ -472,7 +487,7 @@ let newArray len (elType: TypeRef) (state: ExecutionState) =
     let state = state.ChangeObject newObjects
     let array = { ArrayInfo.Initialize elType defaultVal with Length = len }
     let heapObj =
-        { HeapObject.Type = TypeRef (new Mono.Cecil.ArrayType(elType.Reference))
+        { HeapObject.Type = TypeRef.CreateArray elType
           TypeIsDefinite = true
           IsShared = SExpr.ImmConstant false
           Fields = dict<_, _>.Empty
@@ -688,10 +703,34 @@ let readLValue (expr: SLExprNode) (state: ExecutionState) =
         accessField target (FieldOrElement.FieldRef field) state
     | SLExprNode.LdField (field, None) ->
         accessStaticField field state
+    | SLExprNode.LdElement (target, index) ->
+        accessField target (FieldOrElement.ElementRef(index, (target.ResultType.Reference :?> Mono.Cecil.ArrayType).ElementType |> TypeRef)) state
     | _ -> failwithf "Can't read LValue, expression of type %O" (expr.GetType())
 let dereference (expr: SExpr) (state: ExecutionState) =
     match expr.Node with
     | SExprNode.Reference lv -> readLValue lv state
+    | _ ->
+        tooComplicated (sprintf "Can't deref node %O" expr)
+
+let setLValue (expr: SLExprNode) (value: SExpr) (state: ExecutionState) =
+    match expr with
+    | SLExprNode.Parameter p ->
+        if state.Locals.ContainsKey p then
+            { state with Locals = state.Locals.SetItem(p, value) }
+        else
+            tooComplicated (sprintf "Can't assign to parameter %s" p.Name)
+    | SLExprNode.LdField (field, Some target) ->
+        setField target field value state
+    | SLExprNode.LdField (field, None) ->
+        setStaticField field value state
+    | SLExprNode.LdElement (target, index) ->
+        setElement target index value state
+    | _ -> failwithf "Can't read LValue, expression %A" expr
+
+let setReference (expr: SExpr) (value: SExpr) (state: ExecutionState) =
+    softAssert (expr.ResultType = TypeRef.CreateByref value.ResultType) "Reference and value don't fit"
+    match expr.Node with
+    | SExprNode.Reference lv -> setLValue lv value state
     | _ ->
         tooComplicated (sprintf "Can't deref node %O" expr)
 

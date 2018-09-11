@@ -77,7 +77,7 @@ and SExprNode =
 and SExpr = {
     ResultType: TypeRef
     NodeLeavesRank: int
-    NodeCountRank: int
+    NodeRank: int64
     Node: SExprNode
 //    Config: SExprConfig
     SimplificationVersion: AssumptionSetVersion
@@ -88,7 +88,7 @@ with
      member a.IsUndecidable = match a.Node with SExprNode.InstructionCall (InstructionFunction.Undecidable, _, _) -> true | _ -> false
      static member New resultType node =
         let struct (cRank, lRank) = SExpr.CountExprNodes node
-        { SExpr.Node = node; ResultType = resultType; SimplificationVersion = AssumptionSetVersion.None; NodeLeavesRank = lRank; NodeCountRank = cRank }
+        { SExpr.Node = node; ResultType = resultType; SimplificationVersion = AssumptionSetVersion.None; NodeLeavesRank = lRank; NodeRank = cRank }
      static member PureCall method (args: #seq<_>) =
         let node = PureCall (method, ImmutableArray.CreateRange(args) |> EqArray.New)
         SExpr.New (TypeRef method.Reference.ReturnType) node
@@ -105,17 +105,17 @@ with
 
      static member ParamReference p =
         let node = Reference (Parameter p)
-        let resType = Mono.Cecil.ByReferenceType(p.Type.Reference) |> TypeRef
+        let resType = TypeRef.CreateByref(p.Type)
         SExpr.New resType node
      static member Reference (referencedType: TypeRef) lvalue =
-        let t = Mono.Cecil.ByReferenceType(referencedType.Reference) |> TypeRef
+        let t = TypeRef.CreateByref(referencedType)
         SExpr.New t (SExprNode.Reference lvalue)
      static member Dereference expr =
         let t = expr.ResultType.Reference :?> Mono.Cecil.ByReferenceType
         SExpr.New (TypeRef t.ElementType) (SExprNode.LValue (SLExprNode.Dereference expr))
      static member LdField field target =
         let node = LValue (LdField (field, target))
-        SExpr.New (TypeRef field.Reference.FieldType) node
+        SExpr.New field.FieldType node
      static member LdElement target index =
         let node = LValue (LdElement (target, index))
         SExpr.New (TypeRef ((target.ResultType.Reference :?> Mono.Cecil.ArrayType).ElementType)) node
@@ -148,22 +148,30 @@ with
         and core node =
             func node visitChildren |> Option.defaultWith (fun () -> visitChildren node)
         core
+     static member private GetNodeRank node =
+        match node with
+        | SExprNode.Condition _ -> 15L
+        | SExprNode.PureCall _ -> 100L
+        | SExprNode.Reference _ -> 5L
+        | SExprNode.InstructionCall (InstructionFunction.Sub, _, _) -> 5L
+        | SExprNode.InstructionCall _ -> 2L
+        | SExprNode.Constant _ | SExprNode.LValue _ -> 1L
      static member private CountExprNodes node =
-        let expr = { SExpr.ResultType = CecilTools.generalSentinelType; SimplificationVersion = AssumptionSetVersion.None; Node = node; NodeLeavesRank = -1; NodeCountRank = -1 }
+        let expr = { SExpr.ResultType = CecilTools.generalSentinelType; SimplificationVersion = AssumptionSetVersion.None; Node = node; NodeLeavesRank = -1; NodeRank = -1L }
         let countExprNodes a =
-            let mutable nodeCounter = 0
+            let mutable nodeCounter = 0L
             let mutable leavesCounter = 0
             SExpr.Visitor (fun e _ ->
                 if Object.ReferenceEquals(e, expr) then
                     None
                 else
-                softAssert (e.NodeCountRank > 0) "NodeCountRank > 0"
+                softAssert (e.NodeRank > 0L) "NodeCountRank > 0"
                 softAssert (e.NodeLeavesRank >= 0) "NodeLeavesRank >= 0"
-                nodeCounter <- nodeCounter + e.NodeCountRank
+                nodeCounter <- nodeCounter + e.NodeRank
                 leavesCounter <- leavesCounter + (
                     if e.NodeLeavesRank > 0 then e.NodeLeavesRank else 1)
                 Some e) a |> ignore
-            struct (nodeCounter + 1, leavesCounter)
+            struct (nodeCounter + SExpr.GetNodeRank node, leavesCounter)
         countExprNodes expr
      static member BoolNot node =
         let node =

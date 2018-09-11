@@ -7,6 +7,29 @@ open Mono.Cecil
 open Mono.Cecil
 open Mono.Cecil
 
+
+let waitForDebug () =
+    if not(System.Diagnostics.Debugger.IsAttached) then
+        printfn "Please attach a debugger, PID = %d" (System.Diagnostics.Process.GetCurrentProcess().Id)
+        while not(System.Diagnostics.Debugger.IsAttached) do
+            System.Threading.Thread.Sleep(100)
+        System.Diagnostics.Debugger.Break()
+
+let softAssert condition message =
+    if not condition then
+        if System.Environment.GetEnvironmentVariable "DEBUG" |> String.IsNullOrEmpty then
+            failwithf "Assertion failed: %s" message
+        else
+            let b = Console.ForegroundColor
+            Console.ForegroundColor <- ConsoleColor.Red
+            printfn "Assertion failed: %s" message
+            printfn "Do you want to [c]ontinue, [d]ebug or [t]hrow?"
+            Console.ForegroundColor <- b
+            match Console.ReadKey(true).KeyChar with
+            | 'c' -> ()
+            | 'd' -> waitForDebug ()
+            | _ -> failwithf "Assertion failed: %s" message
+
 type clist<'a> = list<'a>
 type array<'a> = ImmutableArray<'a>
 type list<'a> = ImmutableList<'a>
@@ -23,6 +46,8 @@ with
         interface IEquatable<EqArray<'a>> with
             member a.Equals b = a.Equals b
         override a.Equals b =
+            // if System.DateTime.Now.Minute > 26 then
+            //     waitForDebug()
             match b with
             | :? EqArray<'a> as b -> a.Equals b
             | _ -> false
@@ -108,29 +133,6 @@ let getOnlyElement (xs: #seq<'a>) =
         None
 
 let optionExpect msg = function None -> failwithf "Option expectation failed: %s" msg | Some x -> x
-
-let waitForDebug () =
-    if not(System.Diagnostics.Debugger.IsAttached) then
-        printfn "Please attach a debugger, PID = %d" (System.Diagnostics.Process.GetCurrentProcess().Id)
-        while not(System.Diagnostics.Debugger.IsAttached) do
-            System.Threading.Thread.Sleep(100)
-        System.Diagnostics.Debugger.Break()
-
-let softAssert condition message =
-    if not condition then
-        if System.Environment.GetEnvironmentVariable "DEBUG" |> String.IsNullOrEmpty then
-            failwithf "Assertion failed: %s" message
-        else
-            let b = Console.ForegroundColor
-            Console.ForegroundColor <- ConsoleColor.Red
-            printfn "Assertion failed: %s" message
-            printfn "Do you want to [c]ontinue, [d]ebug or [t]hrow?"
-            Console.ForegroundColor <- b
-            match Console.ReadKey(true).KeyChar with
-            | 'c' -> ()
-            | 'd' -> waitForDebug ()
-            | _ -> failwithf "Assertion failed: %s" message
-
 
 type TypeReference with
         member x.TryResolve() =

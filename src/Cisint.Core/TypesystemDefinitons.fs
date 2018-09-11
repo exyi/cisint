@@ -1,9 +1,6 @@
 module TypesystemDefinitions
 open System
 open Mono.Cecil
-open ICSharpCode.Decompiler.TypeSystem
-open Mono.Cecil
-open Mono.Cecil
 
 // returns assignment of generic parameters - type parameter * argument
 let private getGenericAssignment_type (typeDef: TypeDefinition) (typeRef: TypeReference) =
@@ -117,6 +114,10 @@ type TypeRef (cecilReference: TypeReference) =
 
         else TypeRef.AreSameTypes a.DeclaringType b.DeclaringType
 
+    static member CreateArray (element: TypeRef) =
+        TypeRef (ArrayType element.Reference)
+    static member CreateByref (element: TypeRef) =
+        TypeRef (ByReferenceType element.Reference)
 
     member _x.Definition =
         softAssert (cecilDefintion.Value <> null) <| sprintf "Can't resolve type %O" cecilReference
@@ -140,7 +141,10 @@ type TypeRef (cecilReference: TypeReference) =
             x :: bt.BaseTypeChain
         | None -> [x]
     member x.Interfaces =
-        cecilDefintion.Value.Interfaces |> IArray.ofSeq |> IArray.map (fun t -> TypeRef (t.InterfaceType.ResolvePreserve x.GenericParameterAssigner))
+        let i = cecilDefintion.Value.Interfaces |> IArray.ofSeq |> IArray.map (fun t -> TypeRef (t.InterfaceType.ResolvePreserve x.GenericParameterAssigner))
+        match x.BaseType with
+        | None -> i
+        | Some baseType -> IArray.append i baseType.Interfaces
     member x.GenericParameterAssigner = createGenericParameterAssigner (getGenericAssignment_type x.Definition cecilReference)
     /// Gets all fields with instantiated generic arguments, including base types
     member x.Fields =
@@ -183,6 +187,7 @@ and MethodRef(cecilReference: MethodReference) =
         softAssert (cecilDefintion.Value <> null) <| sprintf "Can't resolve method %O" cecilReference
         cecilDefintion.Value
     member _x.Reference = cecilReference
+    member _x.Name = cecilReference.Name
     member x.ReturnType = TypeRef(cecilReference.ReturnType.ResolvePreserve x.GenericParameterAssigner)
     member _x.DeclaringType = TypeRef(cecilReference.DeclaringType)
     member x.ParameterTypes =
@@ -192,6 +197,8 @@ and MethodRef(cecilReference: MethodReference) =
             Seq.append [ (if x.DeclaringType.Reference.IsValueType then TypeRef (Mono.Cecil.ByReferenceType(x.Reference.DeclaringType)) else x.DeclaringType) ] p |> IArray.ofSeq
         else
             p |> IArray.ofSeq
+    member x.Overrides =
+        x.Definition.Overrides |> IArray.ofSeq |> IArray.map (fun m -> m.ResolvePreserve x.GenericParameterAssigner |> MethodRef)
     member x.GenericParameterAssigner = createGenericParameterAssigner (getGenericAssignment_method x.Definition cecilReference)
 
     static member AreSameMethods (a: MethodReference) (b: MethodReference) =

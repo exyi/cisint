@@ -20,7 +20,7 @@ let state = ExecutionState.Empty
 let dispatcher = Interpreter.createSynchronousDispatcher (fun frames ->
     // printfn "%A" frames
     if frames.Length > 30 then
-        assertOrComplicated false (sprintf "To many method calls:\n%s" (String.Join("\n", frames)))
+        assertOrComplicated false (sprintf "Too many method calls:\n%s" (String.Join("\n", frames |> Seq.map (fun f -> "\t" + f.Method.ToString()))))
     )
 
 printfn "Current directory is %s" (IO.Directory.GetCurrentDirectory())
@@ -185,6 +185,16 @@ let ``csharp iterator - LookAtIterator`` () = task {
 let ``csharp iterator - SumIterator`` () = task {
     let! result1, formatted = interpretMethod "SumIterator" "constant" state [ SExpr.ImmConstant 3 ]
     Assert.Equal("-97", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    // TODO: remove these side-effects
+    // Assert.Equal(0, result1.SideEffects.Count)
+    // Assert.DoesNotContain(".heapStuff", formatted)
+    ()
+}
+
+[<Fact(Skip = "needs static initialized properties")>]
+let ``fsharp iterator - MoreComplexIterator`` () = task {
+    let! result1, formatted = interpretMethod "MoreComplexIterator" "constant" state [ SExpr.ImmConstant 3 ]
+    Assert.Equal(sprintf "%d" (Something.MoreComplexIterator 10), List.exactlyOne result1.Stack |> ExprFormat.exprToString)
     // TODO: remove these side-effects
     // Assert.Equal(0, result1.SideEffects.Count)
     // Assert.DoesNotContain(".heapStuff", formatted)
