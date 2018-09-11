@@ -4,14 +4,11 @@ open Cisint.Core
 open Expression
 open System
 open Xunit
-open System.Collections.Generic
 open InterpreterState
 open Cisint.Tests.TestInputs
 open FSharp.Control.Tasks.V2
 open TypesystemDefinitions
 open StateProcessing
-open System.Collections.Generic
-open CecilTools
 let testMethod =
     let t = (CecilTools.convertType typeof<Something>)
     fun name -> t.Definition.Methods |> Seq.find (fun m -> m.Name = name) |> MethodRef
@@ -23,12 +20,18 @@ let dispatcher = Interpreter.createSynchronousDispatcher (fun frames ->
         assertOrComplicated false (sprintf "Too many method calls:\n%s" (String.Join("\n", frames |> Seq.map (fun f -> "\t" + f.Method.ToString()))))
     )
 
+let execService =
+    { Interpreter.defaultServices with
+        Dispatch = dispatcher
+        AccessStaticField = Interpreter.aBitSmartReadStaticField
+    }
+
 printfn "Current directory is %s" (IO.Directory.GetCurrentDirectory())
 
 let interpretMethod method name state args =
     task {
         let methodRef = (testMethod method)
-        let! result = Interpreter.interpretMethod methodRef state args dispatcher
+        let! result = Interpreter.interpretMethod methodRef state (IArray.ofSeq args) execService
         let result = { result with Stack = List.map (fun a -> stackConvert a methodRef.ReturnType |> ExprSimplifier.simplify (AssumptionSet.add [SExpr.ImmConstant true] state.Assumptions)) result.Stack }
         let stateDump = ExprFormat.dumpState result
         IO.Directory.CreateDirectory "state_dump" |> ignore
@@ -42,7 +45,7 @@ let ``Simple XOR method`` () = task {
     let paramA = SParameter.New (CecilTools.intType) "a"
     let paramB = SParameter.New (CecilTools.intType) "b"
     let method = testMethod "A"
-    let! result = Interpreter.interpretMethod method state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
+    let! result = Interpreter.interpretMethod method state (IArray.ofSeq [ SExpr.Parameter paramA; SExpr.Parameter paramB ]) execService
 
     Assert.Equal(result.Stack.Length, 1)
     Assert.Equal("(a ^ b)", ExprFormat.exprToString result.Stack.Head)
@@ -53,8 +56,8 @@ let ``Simple XOR method`` () = task {
 let ``Simple condition`` () = task {
     let paramA = SParameter.New (CecilTools.intType) "a"
     let paramB = SParameter.New (CecilTools.intType) "b"
-    let! result1 = Interpreter.interpretMethod (testMethod "WithCondition") state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
-    let! result2 = Interpreter.interpretMethod (testMethod "WithCondition2") state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
+    let! result1 = Interpreter.interpretMethod (testMethod "WithCondition") state (IArray.ofSeq [ SExpr.Parameter paramA; SExpr.Parameter paramB ]) execService
+    let! result2 = Interpreter.interpretMethod (testMethod "WithCondition2") state (IArray.ofSeq [ SExpr.Parameter paramA; SExpr.Parameter paramB ]) execService
     // let! result2 = Interpreter.interpretMethod method state [ SExpr.Parameter paramA; SExpr.Parameter paramB ] dispatcher
 
     // TODO: make these results equal - learn Expression simplifier that `if not c then b else a` <=> `if c then a else b`
@@ -191,9 +194,28 @@ let ``csharp iterator - SumIterator`` () = task {
     ()
 }
 
-[<Fact(Skip = "needs static initialized properties")>]
+[<Fact()>]
+let ``fsharp simple iterator contant - FsharpIterator`` () = task {
+    let! result1, formatted = interpretMethod "FsharpIterator" "constant" state [ SExpr.ImmConstant 3 ]
+    Assert.Equal(sprintf "%d" (Something.FsharpIterator 3), List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
+    ()
+}
+
+[<Fact()>]
+let ``fsharp simple iterator - FsharpIterator`` () = task {
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let! result1, formatted = interpretMethod "FsharpIterator" "general" state [ SExpr.Parameter paramA ]
+    Assert.Equal(SExpr.Parameter paramA, List.exactlyOne result1.Stack)
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.DoesNotContain(".heapStuff", formatted)
+    ()
+}
+
+[<Fact()>]
 let ``fsharp iterator - MoreComplexIterator`` () = task {
-    let! result1, formatted = interpretMethod "MoreComplexIterator" "constant" state [ SExpr.ImmConstant 3 ]
+    let! result1, formatted = interpretMethod "MoreComplexIterator" "constant" state [ SExpr.ImmConstant 10 ]
     Assert.Equal(sprintf "%d" (Something.MoreComplexIterator 10), List.exactlyOne result1.Stack |> ExprFormat.exprToString)
     // TODO: remove these side-effects
     // Assert.Equal(0, result1.SideEffects.Count)

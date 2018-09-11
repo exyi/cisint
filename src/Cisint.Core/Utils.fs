@@ -6,14 +6,18 @@ open System.Collections.Generic
 open Mono.Cecil
 open Mono.Cecil
 open Mono.Cecil
+open Mono.Cecil
 
 
 let waitForDebug () =
+#if DEBUG
     if not(System.Diagnostics.Debugger.IsAttached) then
         printfn "Please attach a debugger, PID = %d" (System.Diagnostics.Process.GetCurrentProcess().Id)
         while not(System.Diagnostics.Debugger.IsAttached) do
             System.Threading.Thread.Sleep(100)
         System.Diagnostics.Debugger.Break()
+#endif
+    ()
 
 let softAssert condition message =
     if not condition then
@@ -84,6 +88,12 @@ module IArray =
             match f i with
             | Some x -> b.Add(x)
             | None -> ()
+        b.ToImmutable()
+    let filter (f : 'a -> bool) (arr: 'a array) =
+        let b = ImmutableArray.CreateBuilder()
+        for i in arr do
+            if f i then
+                b.Add i
         b.ToImmutable()
     let init count gen =
         let b = ImmutableArray.CreateBuilder(count)
@@ -163,6 +173,12 @@ type TypeReference with
                 elif x.IsPointer then
                     let x = x :?> PointerType
                     new Mono.Cecil.PointerType(x.ElementType.ResolvePreserve customMapping) :> TypeReference
+                elif x.IsRequiredModifier then
+                    let x = x :?> RequiredModifierType
+                    new Mono.Cecil.RequiredModifierType(x.ModifierType.ResolvePreserve customMapping, x.ElementType.ResolvePreserve customMapping) :> TypeReference
+                elif x.IsOptionalModifier then
+                    let x = x :?> OptionalModifierType
+                    new Mono.Cecil.OptionalModifierType(x.ModifierType.ResolvePreserve customMapping, x.ElementType.ResolvePreserve customMapping) :> TypeReference
                 elif x.HasGenericParameters then
                     let p = x.GenericParameters |> Seq.map (fun p -> p.ResolvePreserve(customMapping)) |> Seq.toList
                     if Seq.toList (x.GenericParameters |> Seq.map (fun x -> x :> TypeReference)) <> p then

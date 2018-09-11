@@ -27,25 +27,16 @@ open Mono.Cecil.Cil
 open System.Collections.Generic
 open System.Runtime.CompilerServices
 open Mono.Cecil.Cil
+open System.Collections.Immutable
 
-type InterpreterFrameInfo = {
-    FrameToken: obj
-    Method: MethodRef
-    Args: SExpr array
-    BranchingFactor: int
-    CurrentInstruction: Mono.Cecil.Cil.Instruction
-}
-
-type InterpreterFrameDispatcher = InterpreterFrameInfo clist -> (unit -> Task<ExecutionState * InterpreterReturnType>) -> Task<ExecutionState * InterpreterReturnType>
-
-type ExecutionCacheEntry = {
+type private ExecutionCacheEntry = {
     ArgParameters: SParameter array
     /// condition -> state; the condition may contain some references to the resulting execution state (i.e. be dependent on some side effect result), but the system should try to reduce these
     DefiniteStates: (SExpr * ExecutionState) array
 }
 
-type InstructionPrefixes = {
-    Constained: TypeRef option
+type private InstructionPrefixes = {
+    Constrained: TypeRef option
     NoCheck: bool
     ReadOnly: bool
     Tail: bool
@@ -53,7 +44,7 @@ type InstructionPrefixes = {
     Volatile: bool
 }
 
-let noPrefixes = { Constained = None; InstructionPrefixes.NoCheck = false; ReadOnly = false; Tail = false; Unaligned = false; Volatile = true }
+let private noPrefixes = { Constrained = None; InstructionPrefixes.NoCheck = false; ReadOnly = false; Tail = false; Unaligned = false; Volatile = true }
 
 let private runAndMerge todoFunctions dispatchFrame =
     let result :Task<(ExecutionState * InterpreterReturnType) []> = Task.WhenAll<ExecutionState * InterpreterReturnType>(todoFunctions |> Seq.map (dispatchFrame))
@@ -87,11 +78,13 @@ let stackArithmeticCoerce a b =
         (a, SExpr.Cast InstructionFunction.Convert CecilTools.nintType b)
     elif a.ResultType = CecilTools.intType && b.ResultType = CecilTools.nintType then
         (SExpr.Cast InstructionFunction.Convert CecilTools.nintType a, b)
+    elif List.allPairs [ a.ResultType; b.ResultType ] [ CecilTools.nintType; CecilTools.nuintType ] |> Seq.exists (fun (a, b) -> a=b) then
+        tooComplicated (sprintf "coertion %O <-> %O is not supported - pointer arithmentics is unsafe" a.ResultType b.ResultType)
     else
         waitForDebug ()
         failwithf "coertion %O <-> %O not supported (expressions %s, %s)" a.ResultType b.ResultType (ExprFormat.exprToString a) (ExprFormat.exprToString b)
 
-let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction * InstructionPrefixes) ((locals, arguments): (SParameter array) * (SParameter array)) (state: ExecutionState) =
+let rec private interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction * InstructionPrefixes) ((locals, arguments): (SParameter array) * (SParameter array)) (state: ExecutionState) =
     let proc1stack (fn: SExpr -> SExpr) =
         let result, rest =
             match state.Stack with
@@ -338,16 +331,17 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
         // softAssert (not method.ContainsGenericParameter) <| sprintf "%O contains generic parameters" method
         let returnI = if prefixes.Tail then None; else Some instr.Next
         let args, state = state.PopStack (method.Parameters.Count + if method.HasThis then 1 else 0)
-        if op = OpCodes.Callvirt && prefixes.Constained.IsSome then
-            let overridenMethod = findOverridenMethod prefixes.Constained.Value (MethodRef method)
-            if overridenMethod.DeclaringType = prefixes.Constained.Value then
+        if op = OpCodes.Callvirt && prefixes.Constrained.IsSome then
+            let overridenMethod = findOverridenMethod prefixes.Constrained.Value (MethodRef method)
+            if overridenMethod.DeclaringType = prefixes.Constrained.Value then
                 // the function is overriden -> invoke it directly
-                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (overridenMethod, args, returnI, false) } ]
+                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (overridenMethod, args, returnI, true) } ]
             else
                 // it's not overriden -> invoke the base implementation with boxing and stuff
                 // it's only used for object.ToString, object.GetHashCode and so on, which don't mutate the object => we can ignore the copyReference
-                let args = ((SExpr.InstructionCall InstructionFunction.Cast CecilTools.objType [ SExpr.Dereference args.Head ]) :: args.Tail)
-                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, args, returnI, false) } ]
+                let firstArg, state = dereference args.Head state
+                let args = ((SExpr.InstructionCall InstructionFunction.Cast CecilTools.objType [ firstArg ]) :: args.Tail)
+                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, args, returnI, true) } ]
         else
             InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (MethodRef method, args, returnI, op = OpCodes.Callvirt) } ]
 
@@ -415,8 +409,10 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
 
     elif op = OpCodes.Ldsfld then
         let field = (instr.Operand :?> Mono.Cecil.FieldReference).ResolvePreserve genericAssigner |> FieldRef
-        let result, state = accessStaticField field state
-        InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
+        // let result, state = accessStaticField field state
+        InterpretationResult.Branching [
+            { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.AccessStaticField (field, instr.Next) }
+        ]
 
     elif op = OpCodes.Ldflda then
         // the address is simply loaded as an expression. The magic is handled when it's dereferenced
@@ -440,7 +436,7 @@ let rec interpretInstruction genericAssigner ((instr, prefixes): Cil.Instruction
 
     elif op = OpCodes.Newarr then
         let [len], state = state.PopStack 1
-        let elType = instr.Operand :?> TypeReference |> TypeRef
+        let elType = (instr.Operand :?> Mono.Cecil.TypeReference).ResolvePreserve genericAssigner |> TypeRef
         let object, state = newArray (Some len) elType state
         let objParam = getObjectParam object.Type
         let state = state.ChangeObject [ objParam, object ]
@@ -498,13 +494,23 @@ let private takeInterpretationReturnState (t: Task<ExecutionState * InterpreterR
         return r
     }
 
+let forcedComplicatedMethods = set [
+    "System.Globalization.CultureInfo System.Globalization.CultureInfo::get_CurrentUICulture()"
+    "System.Globalization.CultureInfo System.Globalization.CultureInfo::get_CurrentCulture()"
+    "System.Int32 System.String::GetHashCode()"
+    "System.String System.SR::GetResourceString(System.String,System.String)"
+]
 
-let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args: SExpr array) (dispatchFrame: InterpreterFrameDispatcher) =
+let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args: SExpr array) (execService: ExecutionServices) =
     let methodDef = methodref.Definition
     let method = methodref.Reference
+    if forcedComplicatedMethods.Contains methodDef.FullName || forcedComplicatedMethods.Contains method.FullName then
+        tooComplicated "Method is on blacklist"
     let genericAssigner = methodref.GenericParameterAssigner
+    softAssert (not methodDef.DeclaringType.IsInterface) "Can't invoke interface method directly"
     assertOrComplicated (methodDef.Body <> null) "method does not have body"
     assertOrComplicated (not method.HasGenericParameters) "method contains unbound generic parameters"
+    assertOrComplicated (methodDef.Body.Variables |> Seq.forall (fun v -> not v.IsPinned)) "Method has pinned variable, this seems to be unsafe"
     let allParameters = Seq.append (if methodDef.IsStatic then [] else [methodDef.Body.ThisParameter]) method.Parameters |> IArray.ofSeq
     softAssert (methodDef.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id) "variable indices don't fit"
     softAssert (allParameters |> Seq.mapi (fun i v -> v.Sequence = i) |> Seq.forall id) "parameter indices don't fit"
@@ -514,7 +520,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
 
     // printfn "Interpreting Core %O" methodref
     // method.Body.Instructions |> Seq.iter (printfn "\t%O")
-
+#if DEBUG
     try
         IO.Directory.CreateDirectory "dasm" |> ignore
         let filename = methodDef.FullName.Replace("/", "_")
@@ -523,6 +529,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                        else filename
         IO.File.WriteAllLines("dasm/" + filename + ".il", methodDef.Body.Instructions |> Seq.map (sprintf "\t%O"))
     with e -> ()//printfn "Could not write out dasm of %O: %s" methodDef e.Message
+#endif
 
     let tryStarts = methodDef.Body.ExceptionHandlers |> Seq.map (fun h -> h.TryStart) |> Collections.Generic.HashSet
 
@@ -536,7 +543,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
 
     let rec interpretBlock prefixes (i: Cil.Instruction) state =
         if i.OpCode = OpCodes.Constrained then
-            interpretBlock { prefixes with Constained = Some ((i.Operand :?> TypeReference).ResolvePreserve(genericAssigner) |> TypeRef) } i.Next state
+            interpretBlock { prefixes with Constrained = Some ((i.Operand :?> TypeReference).ResolvePreserve(genericAssigner) |> TypeRef) } i.Next state
         elif i.OpCode = OpCodes.No then
             interpretBlock { prefixes with NoCheck = true } i.Next state
         elif i.OpCode = OpCodes.Readonly then
@@ -580,41 +587,56 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
             else
                 softAssert (todoItems |> List.forall (fun t -> t.State.Parent.IsSome)) "All state forks need to have a parent"
                 softAssert (todoItems |> List.forall (fun t -> t.State.Parent.Value.Parent = state.Parent)) "All state forks need to be granchild of current parent"
-            // printfn "Branching in %O:" method
             let todoFunctions =
                 todoItems
                 |> Seq.filter (fun t -> t.State.Conditions |> IArray.forall ((<>) (SExpr.ImmConstant false)))
                 |> IArray.ofSeq
                 |> IArray.map (fun t ->
                     match t.Target with
-                    | InterpreterTodoTarget.CurrentMethod i ->
-                        // printfn "Jumping to '%O', with condition %A" i (List.ofSeq t.State.Conditions |> List.map ExprFormat.exprToString)
-                        fun () -> interpretFrom i t.State cycleDetection
+                    | InterpreterTodoTarget.CurrentMethod jumpTo ->
+                        // if the branch jumps at the start of a new exception handler, it has to be initialized
+                        let isExceptionHandlerStart = tryStarts.Contains jumpTo && methodDef.Body.ExceptionHandlers |> Seq.exists (fun e ->
+                            (e.TryStart = jumpTo) && (e.TryStart.Offset > i.Offset || e.TryEnd.Offset < i.Offset))
+                        let jumpTo = if isExceptionHandlerStart then
+                                         let i = Cil.Instruction.Create OpCodes.Nop
+                                         i.Next <- jumpTo
+                                         i
+                                     else jumpTo
+                        fun () -> interpretFrom jumpTo t.State cycleDetection
                     | InterpreterTodoTarget.CallMethod (m, args, returnI, virt) ->
                         let state = t.State
                         let savedStack = state.Stack
                         let state = { state with Stack = [] }
-                        let recurse = if virt then interpretVirtualMethod else interpretMethod
+                        let recurse = if virt then interpretVirtualMethod else execService.InterpretMethod
                         let args = IArray.ofSeq (Seq.map2 stackConvert args m.ParameterTypes) |> IArray.map (ExprSimplifier.simplify state.Assumptions)
                         fun () -> task {
-                            let! resultState = recurse m state args dispatchFrame
+                            let! resultState = recurse m state args execService
                             softAssert (LanguagePrimitives.PhysicalEquality resultState.Parent state.Parent) "Can't change parent by interpreting"
                             let resultState = { resultState with Stack = List.append resultState.Stack savedStack }
                             match returnI with
                             | Some returnI -> return! interpretFrom returnI resultState cycleDetection
                             | None -> return (resultState, NextMethod)
                         }
+                    | InterpreterTodoTarget.AccessStaticField (field, returnI) ->
+                        let state = t.State
+                        let savedStack = state.Stack
+                        let state = { state with Stack = [] }
+                        fun () -> task {
+                            let! result, resultState = execService.AccessStaticField field state execService
+                            softAssert (LanguagePrimitives.PhysicalEquality resultState.Parent state.Parent) "Can't change parent in AccessStaticField"
+                            let resultState = { resultState with Stack = result :: savedStack }
+                            return! interpretFrom returnI resultState cycleDetection
+                        }
                     | InterpreterTodoTarget.ExceptionHandlerEntry i ->
                         let handlers = methodDef.Body.ExceptionHandlers |> Seq.filter (fun h -> h.TryStart = i)
                         printfn "Doing some exception handler at %O" methodref
-                        assertOrComplicated (handlers |> Seq.forall (fun h -> h.HandlerType = ExceptionHandlerType.Finally)) "Encountered handler other than finally"
                         softAssert t.State.Stack.IsEmpty "Stack has to be empty when exception handler block starts"
                         let initState = t.State.WithCondition []
                         initState.AssertSomeInvariants() |> ignore
                         let unwindToParent state =
                             let tState = state.Parent.Value
                             softAssert (tState = t.State) "Parent is wrong"
-                            softAssert (tState.Conditions.IsEmpty) "Parent is wrong"
+                            softAssert (state.Conditions.IsEmpty) "Parent is wrong"
                             { tState with
                                      Assumptions = state.Assumptions
                                      ChangedHeapObjects = List.append state.ChangedHeapObjects tState.ChangedHeapObjects
@@ -642,7 +664,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                                     o, { object with Fields = object.Fields.SetItems(fields |> Seq.map (fun f -> KeyValuePair(f, SExpr.Undecidable f.FieldType))) })
                                 { initState with Locals = initState.Locals.SetItems(touchedLocals |> Seq.map (fun (KeyValue(k, _)) -> KeyValuePair(k, SExpr.Undecidable k.Type)))
                                                  Assumptions = { initState.Assumptions with Heap = initState.Assumptions.Heap.SetItems (changedObjects |> Seq.map KeyValuePair) } }.AssertSomeInvariants()
-                            let handler = Seq.exactlyOne handlers // TODO: how multiple handlers starting at the same position work?
+                            let handler = Seq.exactlyOne handlers // TODO: how do multiple handlers starting at the same position work?
                             let isTryExceptionSafe =
                                 // if the try block does not contain any sode-effect we are allowed to reorder everything out of the try block anyway
                                 tryState.SideEffects.IsEmpty
@@ -650,6 +672,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                                 return! interpretFrom tryTarget (unwindToParent tryState) cycleDetection // ignore the finally block altogether and continue
                             else
 
+                            assertOrComplicated (handlers |> Seq.forall (fun h -> h.HandlerType = ExceptionHandlerType.Finally)) "Encountered handler other than finally"
                             let! (handlerState, LeaveExceptionHandler None) = interpretFrom handler.HandlerStart handlerStartingState cycleDetection
 
                             let isHandlerEmpty =
@@ -681,7 +704,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                         }
 
                 )
-            let dispatchNext = dispatchFrame [ { frameInfo with CurrentInstruction = i; BranchingFactor = todoFunctions.Length } ]
+            let dispatchNext = execService.Dispatch [ { frameInfo with CurrentInstruction = i; BranchingFactor = todoFunctions.Length } ]
             if todoItems.Length = 1 then
                 dispatchNext (todoFunctions |> Seq.exactlyOne)
             else runAndMerge todoFunctions dispatchNext
@@ -698,55 +721,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
 
     interpretFrom startNopInstruction state [] |> takeInterpretationReturnState
 
-/// Cache of functions executed in full generality (from empty execution state and general parameters)
-and private intCache : ConcurrentDictionary<MethodRef, Task<ExecutionCacheEntry>> = ConcurrentDictionary()
-and private intAntiCycler : ConcurrentDictionary<MethodRef, bool> = ConcurrentDictionary()
-
-and private getPreinterpretedMethod (method: MethodRef) =
-    if intAntiCycler.TryAdd(method, true) then
-        intCache.GetOrAdd(method, fun method -> task {
-            return ({ ExecutionCacheEntry.ArgParameters = array<_>.Empty; DefiniteStates = array<_>.Empty })
-        })
-    else
-        Task.FromResult({ ExecutionCacheEntry.ArgParameters = array<_>.Empty; DefiniteStates = array<_>.Empty })
-
-and interpretMethod (method: MethodRef) (state: ExecutionState) (args: seq<SExpr>) (dispatcher: InterpreterFrameDispatcher) =
-    let args = IArray.ofSeq args
-    let nestedDispatcher = fun f -> dispatcher ({ InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = 1; CurrentInstruction = null } :: f)
-    softAssert (state.Stack.IsEmpty) "Stack needs to be empty"
-    let resultAsserts result =
-        // check that the method does not introduce new undecidables into the system
-        if args |> Seq.forall (fun a -> not a.IsUndecidable) then
-            assertOrComplicated (result.Stack |> List.forall (fun e -> match e.Node with SExprNode.InstructionCall (InstructionFunction.Undecidable, _, _) -> false | _ -> true)) "Method returns undecidable value"
-        softAssert (System.Object.ReferenceEquals(result.Parent, state.Parent)) "State parent needs to be the same"
-        if method.ReturnType.FullName = "System.Void" then
-            softAssert (result.Stack.Length = 0) <| sprintf "%O - void method returns %d vals." method result.Stack.Length
-        else
-            softAssert (result.Stack.Length = 1) <| sprintf "%O - method returns %d vals." method result.Stack.Length
-    task {
-        // let! preinterpreted = getPreinterpretedMethod method
-
-        try
-            // printfn "Interpreting %O" method
-            let! result = interpretMethodCore method state (IArray.ofSeq args) nestedDispatcher
-            resultAsserts result
-            return result
-        with
-          | FunctionTooComplicatedException msg ->
-            // function is too complicated => it's a side effect
-
-            printfn "Function %O is too complicated - %s" method msg
-
-            let result = addCallSideEffect method (getMethodSideEffectInfo method) args (*virt*)false state
-            resultAsserts result
-            return result
-          | otherException ->
-            raise (new Exception(sprintf "Error occured during execution of %O" method, otherException))
-
-            return state // dummy
-
-    }
-and interpretVirtualMethod method state args dispatcher =
+and interpretVirtualMethod method state args execService =
     let devirtTargets = devirtualize method args state
     let states = ResizeArray()
     let jobs =
@@ -763,19 +738,159 @@ and interpretVirtualMethod method state args dispatcher =
             let args = args.SetItem(0, castTarget args.[0])
             if isVirtual then
                 // not devirtualizable -> side effect
-                fun () -> (addCallSideEffect method (getMethodSideEffectInfo method) args (*virt*)true forkedState, NextMethod) |> Task.FromResult
+                fun () -> (addCallSideEffect method (execService.GetMethodSideEffectInfo method execService) args (*virt*)true forkedState, NextMethod) |> Task.FromResult
             else
-                fun () -> (task { let! r = interpretMethod method forkedState args dispatcher in return r, NextMethod })
+                fun () -> (task { let! r = execService.InterpretMethod method forkedState args execService in return r, NextMethod })
         )
     if states.Count = 1 then softAssert (LanguagePrimitives.PhysicalEquality states.[0].Parent state.Parent) "One forked state can't have a different parent"
     else
         softAssert (states |> Seq.forall (fun s -> s.Parent.IsSome)) "Forked states must have a parent"
         softAssert (states |> Seq.forall (fun s -> LanguagePrimitives.PhysicalEquality s.Parent.Value.Parent state.Parent)) "Forked states must be grandchildren of current parent"
-    let dispatchNext = dispatcher [ { InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = devirtTargets.Length; CurrentInstruction = null } ]
+    let dispatchNext = execService.Dispatch [ { InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = devirtTargets.Length; CurrentInstruction = null } ]
     if devirtTargets.Length = 1 then
         dispatchNext (Seq.exactlyOne jobs) |> takeInterpretationReturnState
     else runAndMerge jobs dispatchNext |> takeInterpretationReturnState
 
+
+
+/// Cache of functions executed in full generality (from empty execution state and general parameters)
+let private intCache : ConcurrentDictionary<MethodRef, Task<ExecutionCacheEntry>> = ConcurrentDictionary()
+let private intAntiCycler : ConcurrentDictionary<MethodRef, bool> = ConcurrentDictionary()
+
+let private getPreinterpretedMethod (method: MethodRef) =
+    if intAntiCycler.TryAdd(method, true) then
+        intCache.GetOrAdd(method, fun method -> task {
+            return ({ ExecutionCacheEntry.ArgParameters = array<_>.Empty; DefiniteStates = array<_>.Empty })
+        })
+    else
+        Task.FromResult({ ExecutionCacheEntry.ArgParameters = array<_>.Empty; DefiniteStates = array<_>.Empty })
+
+let interpretMethod (method: MethodRef) (state: ExecutionState) (args: array<SExpr>) (execService: ExecutionServices) =
+    let nestedDispatcher = fun f -> execService.Dispatch ({ InterpreterFrameInfo.FrameToken = obj(); Method = method; Args = args; BranchingFactor = 1; CurrentInstruction = null } :: f)
+    softAssert (state.Stack.IsEmpty) "Stack needs to be empty"
+    let resultAsserts result =
+        // check that the method does not introduce new undecidables into the system
+        if args |> Seq.forall (fun a -> not a.IsUndecidable) then
+            assertOrComplicated (result.Stack |> List.forall (fun e -> match e.Node with SExprNode.InstructionCall (InstructionFunction.Undecidable, _, _) -> false | _ -> true)) "Method returns undecidable value"
+        softAssert (System.Object.ReferenceEquals(result.Parent, state.Parent)) "State parent needs to be the same"
+        if method.ReturnType.FullName = "System.Void" then
+            softAssert (result.Stack.Length = 0) <| sprintf "%O - void method returns %d vals." method result.Stack.Length
+        else
+            softAssert (result.Stack.Length = 1) <| sprintf "%O - method returns %d vals." method result.Stack.Length
+    task {
+        // let! preinterpreted = getPreinterpretedMethod method
+
+        try
+            // printfn "Interpreting %O" method
+            let! result = interpretMethodCore method state (IArray.ofSeq args) { execService with Dispatch = nestedDispatcher }
+            resultAsserts result
+            return result
+        with
+          | FunctionTooComplicatedException msg ->
+            // function is too complicated => it's a side effect
+
+            printfn "Function %O is too complicated - %s" method msg
+
+            let result = addCallSideEffect method (execService.GetMethodSideEffectInfo method execService) args (*virt*)false state
+            resultAsserts result
+            return result
+          | otherException ->
+            raise (new Exception(sprintf "Error occured during execution of %O" method, otherException))
+
+            return state // dummy
+
+    }
+
+let staticConstructorInterpreter =
+    let cache = Collections.Concurrent.ConcurrentDictionary<TypeRef, Task<ExecutionState option>>()
+    fun (services: ExecutionServices) (t: TypeRef) ->
+        cache.GetOrAdd(t, fun t -> task {
+            let initialState = ExecutionState.Empty
+            let readonlyFields = t.Fields |> IArray.filter (fun f -> f.Definition.IsStatic && f.Definition.IsInitOnly)
+            let initialValues, addedObjects =
+                let a = readonlyFields |> IArray.map (fun (f: FieldRef) -> f, StateProcessing.createDefaultValue f.FieldType)
+                IArray.map (fun (f, (v, _)) -> f, v) a, IArray.collect (snd >> snd) a
+            let initialState = initialState.ChangeObject addedObjects
+            let initialState = { initialState with SideEffects = initialValues |> IArray.map (fun (f, v) -> SExpr.ImmConstant true, SideEffect.FieldWrite (None, FieldOrElement.FieldRef f, v, initialState.Assumptions)) |> ImmutableList.CreateRange }
+            match t.Definition.GetStaticConstructor() |> Option.ofObj |> Option.map (fun m -> m.ResolvePreserve t.GenericParameterAssigner |> MethodRef) with
+            | None -> return Some initialState
+            | Some sctor ->
+
+            let! result = services.InterpretMethod sctor initialState array<_>.Empty services
+
+            let rec foldEffect (condition, sideEffect) =
+                match sideEffect with
+                | SideEffect.FieldWrite (None, FieldOrElement.FieldRef field, value, _atState)
+                    when field.DeclaringType = t ->
+                    Some ((IArray.ofSeq << Seq.singleton) (condition, field, value))
+                | SideEffect.Effects effects ->
+                    let e = effects |> IArray.map foldEffect
+                    collapseEffects e condition
+                | _ -> None
+            and collapseEffects e condition =
+                if IArray.forall Option.isSome e then
+                        Some (e |> IArray.collect (fun (Some(a)) -> a |> IArray.map (fun (c, f, e) -> SExpr.BoolAnd condition c, f, e)))
+                    else
+                        None
+
+            match collapseEffects (result.SideEffects |> Seq.map foldEffect |> IArray.ofSeq) (SExpr.ImmConstant true) with
+            | None ->
+                return None
+            | Some assignments ->
+                let clearedState = { result with Locals = initialState.Locals; Stack = []; SideEffects = list<_>.Empty }
+                // it's ok, just rearrange the assignments a bit
+                let assignments =
+                    assignments
+                    |> Seq.groupBy (fun (c, f, v) -> f)
+                    |> Seq.map (fun (field, values) ->
+                        // values are in the assignment order - create a single conditional expression from that
+                        let value =
+                            values
+                            |> Seq.fold (fun s (condition, _f, value) ->
+                                let condition = ExprSimplifier.simplify clearedState.Assumptions condition
+                                match s with
+                                | None ->
+                                    softAssert (condition = SExpr.ImmConstant true) "Initial assignment is ought to be unconditional"
+                                    Some value
+                                | Some oldValue ->
+                                    Some (SExpr.Condition condition value oldValue)
+                            ) None
+                            |> Option.get
+                        let value = ExprSimplifier.simplify clearedState.Assumptions value
+                        SExpr.ImmConstant true, SideEffect.FieldWrite (None, FieldOrElement.FieldRef field, value, clearedState.Assumptions)
+                    )
+                return Some { clearedState with SideEffects = ImmutableList.CreateRange assignments }
+        })
+
+let aBitSmartReadStaticField (f: FieldRef) (s: ExecutionState) services =
+    softAssert f.Definition.IsStatic "Static field is not static"
+    if not f.Definition.IsInitOnly then
+        accessStaticField f s |> Task.FromResult
+    else
+    let rec findAssignment (f: FieldRef) (ces: seq<ConditionalEffect>) =
+        ces |> Seq.rev |> Seq.choose (fun (c, e) ->
+            match e with
+            | SideEffect.FieldWrite (None, FieldOrElement.FieldRef field, value, _atState) when field = f ->
+                Some value
+            | SideEffect.FieldRead (None, FieldOrElement.FieldRef field, out, _atState) when field = f ->
+                Some (SExpr.Parameter out)
+            | SideEffect.Effects e ->
+                findAssignment f e
+            | _ -> None
+        ) |> Seq.tryHead
+    match findAssignment f s.AllSideEffects with
+    | Some value -> (value, s) |> Task.FromResult
+    | None -> task {
+        let! sctorState = staticConstructorInterpreter services f.DeclaringType
+        match sctorState with
+        | None -> return accessStaticField f s
+        | Some sctorState ->
+            // apply the state
+            let state = s.ChangeObject (sctorState.Assumptions.Heap |> Seq.map (fun (KeyValue(a, b)) -> a, b))
+            let state = { state with SideEffects = state.SideEffects.AddRange sctorState.SideEffects }
+            let (Some value) = findAssignment f sctorState.AllSideEffects
+            return value, state
+    }
 
 let createDispatcher logger : InterpreterFrameDispatcher =
     fun frameInfo fn ->
@@ -786,3 +901,10 @@ let createSynchronousDispatcher logger : InterpreterFrameDispatcher =
     fun frameInfo fn ->
         logger frameInfo
         fn ()
+
+let defaultServices =
+    { ExecutionServices.Dispatch = createDispatcher ignore
+      InterpretMethod = interpretMethod
+      GetMethodSideEffectInfo = (fun x _ -> getMethodSideEffectInfo x)
+      AccessStaticField = (fun f s _ -> accessStaticField f s |> Task.FromResult)
+    }

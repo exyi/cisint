@@ -137,6 +137,10 @@ type Something = class
     static member SumIterator (a: int) =
         Cisint.CsharpTestInputs.Class1.YieldSomeInts a |> Seq.sum
 
+    static member FsharpIterator (a: int) =
+        let s = seq { yield a }
+        s |> Seq.exactlyOne
+
     static member MoreComplexIterator (a: int) =
         System.Linq.Enumerable.Range(0, 1000000) |> Seq.skip 2 |> Seq.take a |> Seq.append (Seq.singleton 100) |> Seq.sum
 end

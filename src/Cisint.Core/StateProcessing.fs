@@ -38,14 +38,19 @@ let stackConvert (expr: SExpr) (targetType: TypeRef) =
         SExpr.Cast InstructionFunction.Convert targetType expr
     elif expr.ResultType.IsPrimitive && targetType.Definition.IsEnum then
         SExpr.Cast InstructionFunction.Convert targetType (SExpr.Cast InstructionFunction.Convert (targetType.Definition.GetEnumUnderlyingType() |> TypeRef) expr)
-    elif expr.ResultType.IsObjectReference && targetType.IsObjectReference &&
-         (List.contains targetType expr.ResultType.BaseTypeChain || expr.ResultType.Interfaces.Contains targetType || targetType = CecilTools.objType) then
+    elif expr.ResultType.IsObjectReference && targetType.IsObjectReference && isDownCast expr.ResultType targetType then
         SExpr.Cast InstructionFunction.Cast targetType expr
     elif expr.ResultType.IsObjectReference && targetType.IsObjectReference &&
         expr.Node = SExprNode.Constant null then
         SExpr.New targetType (expr.Node)
     elif targetType.FullName = "System.Array" && expr.ResultType.Reference.IsArray then
         SExpr.Cast InstructionFunction.Cast targetType expr
+    elif targetType.IsObjectReference && expr.ResultType.IsObjectReference then
+        let resultTypeAnalysis = analyseReturnType expr ExecutionState.Empty
+        if resultTypeAnalysis |> Seq.forall (fun (_, t, _) -> isDownCast t targetType) then
+            SExpr.Cast InstructionFunction.Cast targetType expr
+        else
+            failwith "Can't do implicit stack conversion %O -> %O, the result type was analysed and does not fit" expr.ResultType targetType
     else
         assertOrComplicated (not expr.ResultType.Reference.IsPointer && not targetType.Reference.IsPointer) "Can't work with pointers (implicit conversion)"
         softAssert false <| sprintf "Can't do implicit stack conversion %O -> %O" expr.ResultType targetType
@@ -485,7 +490,7 @@ let markSideEffectArguments (args: SExpr array) (argInfo: MethodArgumentEffect a
 let newArray len (elType: TypeRef) (state: ExecutionState) =
     let defaultVal, newObjects = createDefaultValue elType
     let state = state.ChangeObject newObjects
-    let array = { ArrayInfo.Initialize elType defaultVal with Length = len }
+    let array = { ArrayInfo.Initialize elType defaultVal with Length = len |> Option.map (fun e -> stackConvert e CecilTools.nintType) }
     let heapObj =
         { HeapObject.Type = TypeRef.CreateArray elType
           TypeIsDefinite = true
@@ -550,6 +555,7 @@ let private addFieldWriteSideEffect (target: SParameter option) (field: FieldOrE
     let condition = condition |> ExprSimplifier.simplify state.Assumptions
     if condition <> SExpr.ImmConstant false then
         assertDecidableArgs [value]
+        let value = stackConvert value field.ResultType
         let effect = SideEffect.FieldWrite (target, field, value, state.Assumptions)
         { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
     else

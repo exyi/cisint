@@ -2,6 +2,7 @@ module InterpreterState
 open System.Collections.Immutable
 open Expression
 open TypesystemDefinitions
+open System.Threading.Tasks
 
 let indexParameter = SParameter.New CecilTools.intType "_index"
 
@@ -126,6 +127,7 @@ type ExecutionState = {
 type InterpreterTodoTarget =
     | CurrentMethod of Mono.Cecil.Cil.Instruction
     | CallMethod of MethodRef * args: SExpr clist * returnInstruction: option<Mono.Cecil.Cil.Instruction> * isVirtual: bool
+    | AccessStaticField of FieldRef * returnInstruction: Mono.Cecil.Cil.Instruction
     | ExceptionHandlerEntry of Mono.Cecil.Cil.Instruction
 
 type InterpreterTodoItem = {
@@ -158,6 +160,24 @@ type MethodSideEffectInfo = {
     ArgumentBehavior: MethodArgumentEffect array
     ResultIsShared: bool
     ActualResultType: TypeRef option
+}
+
+
+type InterpreterFrameInfo = {
+    FrameToken: obj
+    Method: MethodRef
+    Args: SExpr array
+    BranchingFactor: int
+    CurrentInstruction: Mono.Cecil.Cil.Instruction
+}
+
+type InterpreterFrameDispatcher = InterpreterFrameInfo clist -> (unit -> Task<ExecutionState * InterpreterReturnType>) -> Task<ExecutionState * InterpreterReturnType>
+
+type ExecutionServices = {
+    Dispatch: InterpreterFrameDispatcher
+    InterpretMethod: MethodRef -> ExecutionState -> array<SExpr> -> ExecutionServices -> Task<ExecutionState>
+    GetMethodSideEffectInfo: MethodRef -> ExecutionServices -> MethodSideEffectInfo
+    AccessStaticField: FieldRef -> ExecutionState -> ExecutionServices -> Task<SExpr * ExecutionState>
 }
 
 exception FunctionTooComplicatedException of string
