@@ -497,7 +497,7 @@ let private takeInterpretationReturnState (t: Task<ExecutionState * InterpreterR
 let forcedComplicatedMethods = set [
     "System.Globalization.CultureInfo System.Globalization.CultureInfo::get_CurrentUICulture()"
     "System.Globalization.CultureInfo System.Globalization.CultureInfo::get_CurrentCulture()"
-    "System.Int32 System.String::GetHashCode()"
+    // "System.Int32 System.String::GetHashCode()"
     "System.String System.SR::GetResourceString(System.String,System.String)"
 ]
 

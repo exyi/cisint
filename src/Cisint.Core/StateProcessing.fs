@@ -393,7 +393,41 @@ let rec isTypeImmutable (m: TypeRef) =
     else
 
     let fields = m.Fields
-    (m.Definition.IsSealed || m.Definition.IsValueType) && fields |> Seq.forall (fun f -> f.Definition.IsInitOnly && isTypeImmutable f.FieldType) // TODO: what about unsealed types?
+    fields |> Seq.forall (fun f -> f.Definition.IsInitOnly && (f.FieldType.Definition.IsSealed || f.FieldType.Definition.IsValueType) && isTypeImmutable f.FieldType)
+
+let rec isObjectImmutable (object: HeapObject) haveReferenceToIt (state: ExecutionState) =
+    let t = object.Type
+    if not object.TypeIsDefinite then
+        softAssert (not t.Definition.IsValueType && not t.Definition.IsSealed) "The type actually is definite"
+        false
+    elif object.Array.IsSome then
+        object.Array.Value.Length = Some (SExpr.ImmConstant IntPtr.Zero)
+    elif t.Reference.IsPrimitive || immutableTypes.Contains t.FullName then
+        true
+    elif t.Definition.CustomAttributes |> Seq.exists (fun a -> a.AttributeType.FullName = "System.Runtime.CompilerServices.IsReadOnlyAttribute") then
+        true
+    elif t.Reference.IsValueType && haveReferenceToIt then
+        false
+    else
+    let fields = t.Fields
+    fields |> Seq.forall (fun f ->
+        f.Definition.IsInitOnly && (isTypeImmutable f.FieldType ||
+            match object.Fields.TryGet f with
+            | None -> false
+            | Some fValue ->
+                let parameters = new ResizeArray<SParameter>()
+                SExpr.Visitor (fun expr _ ->
+                    match expr.Node with
+                    | SExprNode.LValue (SLExprNode.Parameter p) | SExprNode.Reference (SLExprNode.Parameter p) ->
+                        parameters.Add p
+                    | _ -> ()
+                    None) fValue |> ignore
+                parameters |> Seq.forall (fun p ->
+                    match state.Assumptions.Heap.TryGet p with
+                    | None -> false
+                    | Some h -> isObjectImmutable h false state
+                )
+        ))
 
 let getPureMethodSideEffectInfo (m: MethodRef) =
     let argCount = (if m.Reference.HasThis then 1 else 0) + m.Reference.Parameters.Count
@@ -411,7 +445,7 @@ let getDefensiveSideEffectInfo (m: MethodRef) =
         MethodSideEffectInfo.IsGlobal = true
         IsPure = false
         ResultIsShared = true
-        ArgumentBehavior = args |> IArray.map (fun p -> if isTypeImmutable p then MethodArgumentEffect.ReadOnly else MethodArgumentEffect.Shared)
+        ArgumentBehavior = args |> IArray.map (fun p -> if (p.Definition.IsSealed || p.Definition.IsValueType) && isTypeImmutable p then MethodArgumentEffect.ReadOnly else MethodArgumentEffect.Shared)
         ActualResultType = None
     }
 
@@ -435,7 +469,7 @@ let getMethodSideEffectInfo (m: MethodRef) =
 
 let rec markObjectShared (o: SParameter) (condition: SExpr) state =
     let hobj = state.Assumptions.Heap.[o]
-    if hobj.IsShared = condition then
+    if hobj.IsShared = condition || isObjectImmutable hobj false state then
         state
     else
 
@@ -447,6 +481,9 @@ let rec markObjectShared (o: SParameter) (condition: SExpr) state =
     let state = state.ChangeObject [ o, { hobj with IsShared = shared } ]
     markUsedObjectsShared hobj.Fields.Values condition state
 and markUsedObjectsShared (exprs: seq<SExpr>) condition state =
+    if condition = SExpr.ImmConstant false then
+        state
+    else
     // TODO: `field = a ? objX : objY` should mark synchronized the objX only if a
     let fieldObjects = exprs |> getObjectsFromExpressions state.Assumptions
     fieldObjects |> Seq.fold (fun state fieldObj ->
@@ -555,6 +592,9 @@ let private addFieldWriteSideEffect (target: SParameter option) (field: FieldOrE
     let condition = condition |> ExprSimplifier.simplify state.Assumptions
     if condition <> SExpr.ImmConstant false then
         assertDecidableArgs [value]
+        let state =
+            let sharedCondition = target |> Option.bind (state.Assumptions.Heap.TryGet) |> Option.map (fun o -> o.IsShared) |> Option.defaultValue (SExpr.ImmConstant true)
+            markUsedObjectsShared [value] sharedCondition state
         let value = stackConvert value field.ResultType
         let effect = SideEffect.FieldWrite (target, field, value, state.Assumptions)
         { state with SideEffects = state.SideEffects.Add(condition |> ExprSimplifier.simplify state.Assumptions, effect) }
@@ -691,7 +731,6 @@ let setElement target index value state =
     s (SExpr.ImmConstant true) state
 
 let accessStaticField field state =
-    // TODO: immutable static fields
     let result, s = addFieldReadSideEffect None (FieldOrElement.FieldRef field)
     SExpr.Parameter result, s (SExpr.ImmConstant true) state
 
