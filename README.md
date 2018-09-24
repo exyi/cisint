@@ -2,7 +2,7 @@
 
 As you could guess from the name, this is a library for symbolic execution of .NET code. It is intended for execution of specific method, not the whole program and it tries to perform full analysis of the program - not just a few of selected paths that were found. When some methods can not be fully understood, they are considered a side effect of any code that invokes the function.
 
-For example, suppose you have a function `let makeTuple (x:int) = (x, x + 1)` (returns a tuple of `x` and `x + 1`. When you try to execute it with generic parameter named `a` you will essentially get the function decompiled (just to a strange language) - it will say that function return a new object of type `System.Tuple``2<System.Int32,System.Int32>` that has field `m_Item1` set to `a` and `m_Item2` set to `a + 1`. This is how the output currenlty looks like:
+For example, suppose you have a function `let makeTuple (x:int) = (x, x + 1)` (returns a tuple of `x` and `x + 1`. When you try to execute it with generic parameter named `a` you will essentially get the function decompiled (just to a strange language) - it will say that function return a new object of type `System.Tuple``2<System.Int32,System.Int32>` that has field `m_Item1` set to `a` and `m_Item2` set to `a + 1`. This is how the output currently looks like:
 
 ```
 .heapStuff {
@@ -28,9 +28,9 @@ return [
 
 Although the tuple object was allocated, when it was used the interpreter when what's inside, so it has just inlined the value. And because the object is not used anywhere it's not displayed at all.
 
-> Note that F# compiler is capable of doing this optimizing this funciton itself, but it's only limited to tuples.
+> Note that F# compiler is capable of doing this optimizing this function itself, but it's only limited to tuples.
 
-The main strength of this thing is executing functions when only some parameters are genric. For example, when you have a higher order function that is invoked with a lambda expression (essentially a "code constant") like this:
+The main strength of this thing is executing functions when only some parameters are generic. For example, when you have a higher order function that is invoked with a lambda expression (essentially a "code constant") like this:
 
 ```fsharp
 let seqMap (fn: 'a -> 'b) (xs: 'a seq) =
@@ -95,11 +95,11 @@ return [
 
 ```
 
-You may have noticed the **shared** statement in the code above. It basically means that everything in this object may be in any state and it can be shared with another thread and every read and write to it is considered a side-effect. Fortunatelly, in this case, the computation was not dependent on the result of these methods and always returns -97.
+You may have noticed the **shared** statement in the code above. It basically means that everything in this object may be in any state and it can be shared with another thread and every read and write to it is considered a side-effect. Fortunately, in this case, the computation was not dependent on the result of these methods and always returns -97.
 
 ### Program state
 
-When the code is interpreted, the interpreter keeeps it's state (locals, parameters, IL stack, objects) in the same `ExecutionState` record that is used to communicate out the result of the computation. Most of the state info is stored in the form of symbolic expressions -- when you have a value somewhere it can be either a constant, symbolic parameter or an expression like `a + 1` or `if (x = 1) { y } else { z }`. These expressions represent values on the IL stack, in local variables, in fields of objects on the heap or elements of an array, they can contain references to another objects, invocation of pure functions, invocations of instructions, conditions and constants. The state may be formatted to the pseudocode you have seen above -- the code has a few important features:
+When the code is interpreted, the interpreter keeps it's state (locals, parameters, IL stack, objects) in the same `ExecutionState` record that is used to communicate out the result of the computation. Most of the state info is stored in the form of symbolic expressions -- when you have a value somewhere it can be either a constant, symbolic parameter or an expression like `a + 1` or `if (x = 1) { y } else { z }`. These expressions represent values on the IL stack, in local variables, in fields of objects on the heap or elements of an array, they can contain references to another objects, invocation of pure functions, invocations of instructions, conditions and constants. The state may be formatted to the pseudocode you have seen above -- the code has a few important features:
 
 * It always starts with a list of side effects.
 	- Field read/writes are represented intuitively as a assignment (`<-`) or parameter definition (`:=`).
@@ -117,7 +117,7 @@ When the code is interpreted, the interpreter keeeps it's state (locals, paramet
 
 ### Expression simplifier
 
-To figure out what is in the symbolic expressions, we have a simplifier -- it takes a expression and tries to reduce it's complexity. Specifically, it should figure out that a expression is always `true`/`false` to prevent reduntant branches, it should fold constant (i.e. `1 + 1` -> `2`), and transform equivalent expressions into a common shape (`a + b` <--> `b + a`). It's quite common for symbolic execution engines to use some SMT solver, this simplifier is a very basic compared to that, but it can IMHO handle lot of practical use cases. Unfortunatelly, it's not very powerful, so you can't expect it to understand hash-tables or quick-sort. Overall, it does something, but I'm not very satisfied with it's capabilities, I'll have to look how to write these things...
+To figure out what is in the symbolic expressions, we have a simplifier -- it takes a expression and tries to reduce it's complexity. Specifically, it should figure out that a expression is always `true`/`false` to prevent redundant branches, it should fold constant (i.e. `1 + 1` -> `2`), and transform equivalent expressions into a common shape (`a + b` <--> `b + a`). It's quite common for symbolic execution engines to use some SMT solver, this simplifier is a very basic compared to that, but it can IMHO handle lot of practical use cases. Unfortunately, it's not very powerful, so you can't expect it to understand hash-tables or quick-sort. Overall, it does something, but I'm not very satisfied with it's capabilities, I'll have to look how to write these things...
 
 ### Extensibility
 
