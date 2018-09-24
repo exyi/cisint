@@ -143,10 +143,25 @@ type Something = class
 
     static member MoreComplexIterator (a: int) =
         System.Linq.Enumerable.Range(0, 1000000) |> Seq.skip 2 |> Seq.take a |> Seq.append (Seq.singleton 100) |> Seq.sum
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
+    static member ReturnObject (a: int) =
+        (a, a + 1)
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
+    static member SumTuple (a: int, b) =
+        a + b
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
+    static member DoStuffWithTuple a = Something.SumTuple (Something.ReturnObject a)
+
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
+    static member SeqMap (fn: 'a -> 'b) (xs: 'a seq) =
+        seq { for i in xs do yield fn i }
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
+    static member SeqCreate count value =
+        seq { for _ in 1..count do yield value }
+
+    static member FSharpLambdasAndSeq (a: int) =
+        Something.SeqCreate a a |> Something.SeqMap (fun a -> a * a) |> Seq.sum
 end
-
-
-
 
 type TestI =
     abstract member M: unit -> int

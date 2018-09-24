@@ -67,6 +67,7 @@ let ``Simple condition`` () = task {
     let fresult2 = result2.Stack |> Seq.exactlyOne |> ExprFormat.exprToString
     Assert.Contains("(a + 1)", fresult2)
     Assert.Contains("if ", fresult2)
+    Assert.Equal (fresult1, fresult2)
 }
 
 
@@ -108,7 +109,7 @@ let ``Simple generic test - UseSomeGenerics`` () = task {
     let paramB = SParameter.New (CecilTools.convertType typeof<string>) "b"
     let! result1, formatted = interpretMethod "UseSomeGenerics" "general" state [ SExpr.Parameter paramA; SExpr.Parameter paramB ]
     Assert.Equal(0, result1.SideEffects.Count)
-    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.DoesNotContain(".heapState", formatted)
     Assert.Equal(
         SExpr.ImmConstant true,
         result1.Stack.Head
@@ -122,7 +123,7 @@ let ``Simple int array - UseSomeArrays`` () = task {
     let paramB = SParameter.New (CecilTools.convertType typeof<int>) "b"
     let! result1, formatted = interpretMethod "UseSomeArrays" "general" state [ SExpr.Parameter paramA; SExpr.Parameter paramB ]
     Assert.Equal(0, result1.SideEffects.Count)
-    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.DoesNotContain(".heapState", formatted)
     Assert.Equal("if (a = b) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
 }
 
@@ -131,7 +132,7 @@ let ``Simple int array constants - UseSomeArrays`` () = task {
     let paramB = SParameter.New (CecilTools.convertType typeof<int>) "b"
     let! result1, formatted = interpretMethod "UseSomeArrays" "constant_a" state [ SExpr.ImmConstant 2; SExpr.Parameter paramB ]
     Assert.Equal(0, result1.SideEffects.Count)
-    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.DoesNotContain(".heapState", formatted)
     Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
 }
 
@@ -140,7 +141,7 @@ let ``Simple enum processing - UseEnums`` () = task {
     let paramB = SParameter.New (CecilTools.convertType typeof<InstructionFunction>) "b"
     let! result1, formatted = interpretMethod "UseEnums" "constant_a" state [ SExpr.ImmConstant 2; SExpr.Parameter paramB ]
     Assert.Equal(0, result1.SideEffects.Count)
-    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.DoesNotContain(".heapState", formatted)
     // Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
 }
 
@@ -149,7 +150,7 @@ let ``Simple devirtualization - IntegerVirtualCall`` () = task {
     let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
     let! result1, formatted = interpretMethod "IntegerVirtualCall" "generic" state [ SExpr.Parameter paramA ]
     Assert.Equal(0, result1.SideEffects.Count)
-    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.DoesNotContain(".heapState", formatted)
     Assert.Equal("0", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
 }
 
@@ -159,7 +160,7 @@ let ``Simple object processing - UseGenericUnion`` () = task {
     let! result1, formatted = interpretMethod "UseGenericUnion" "generic" state [ SExpr.Parameter paramA ]
     // TODO: execute static constructors
     // Assert.Equal(0, result1.SideEffects.Count)
-    // Assert.DoesNotContain(".heapStuff", formatted)
+    // Assert.DoesNotContain(".heapState", formatted)
     // Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
     ()
 }
@@ -190,7 +191,7 @@ let ``csharp iterator - SumIterator`` () = task {
     Assert.Equal("-97", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
     // TODO: remove these side-effects
     // Assert.Equal(0, result1.SideEffects.Count)
-    // Assert.DoesNotContain(".heapStuff", formatted)
+    // Assert.DoesNotContain(".heapState", formatted)
     ()
 }
 
@@ -199,7 +200,7 @@ let ``fsharp simple iterator contant - FsharpIterator`` () = task {
     let! result1, formatted = interpretMethod "FsharpIterator" "constant" state [ SExpr.ImmConstant 3 ]
     Assert.Equal(sprintf "%d" (Something.FsharpIterator 3), List.exactlyOne result1.Stack |> ExprFormat.exprToString)
     Assert.Equal(0, result1.SideEffects.Count)
-    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.DoesNotContain(".heapState", formatted)
     ()
 }
 
@@ -209,7 +210,7 @@ let ``fsharp simple iterator - FsharpIterator`` () = task {
     let! result1, formatted = interpretMethod "FsharpIterator" "general" state [ SExpr.Parameter paramA ]
     Assert.Equal(SExpr.Parameter paramA, List.exactlyOne result1.Stack)
     Assert.Equal(0, result1.SideEffects.Count)
-    Assert.DoesNotContain(".heapStuff", formatted)
+    Assert.DoesNotContain(".heapState", formatted)
     ()
 }
 
@@ -219,8 +220,39 @@ let ``fsharp iterator - MoreComplexIterator`` () = task {
     Assert.Equal(sprintf "%d" (Something.MoreComplexIterator 10), List.exactlyOne result1.Stack |> ExprFormat.exprToString)
     // TODO: remove these side-effects
     // Assert.Equal(0, result1.SideEffects.Count)
-    // Assert.DoesNotContain(".heapStuff", formatted)
+    // Assert.DoesNotContain(".heapState", formatted)
     ()
+}
+
+[<Fact>]
+let ``create object - ReturnObject`` () = task {
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let! result1, formatted = interpretMethod "ReturnObject" "generic" state [ SExpr.Parameter paramA ]
+    let resultP = result1.ChangedHeapObjects |> List.head
+    Assert.Equal("""
+                .heapState {
+                    let o154 = new System.Tuple`2<System.Int32,System.Int32>
+                    o154.m_Item1 = a
+                    o154.m_Item2 = (a + 1)
+                }
+
+                return [
+                    o154
+                ]
+                 """.Replace("o154", resultP.Name) |> removeWhitespace, removeWhitespace formatted)
+}
+
+[<Fact>]
+let ``do stuff with object - DoStuffWithTuple`` () = task {
+    let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
+    let! result1, formatted = interpretMethod "DoStuffWithTuple" "generic" state [ SExpr.Parameter paramA ]
+    Assert.Equal(removeWhitespace "return [(a + (a + 1))]", removeWhitespace formatted)
+}
+
+[<Fact>]
+let ``iterators and lambdas - FSharpLambdasAndSeq`` () = task {
+    let! result1, formatted = interpretMethod "FSharpLambdasAndSeq" "constant_a" state [ SExpr.ImmConstant 1 ]
+    Assert.Equal(sprintf "%d" (Something.FSharpLambdasAndSeq 1), List.exactlyOne result1.Stack |> ExprFormat.exprToString)
 }
 
 
@@ -228,7 +260,7 @@ let ``fsharp iterator - MoreComplexIterator`` () = task {
 let ``hash table constant - UseHashTable`` () = task {
     let! result1, formatted = interpretMethod "UseHashTable" "constant_a" state [ SExpr.ImmConstant 2 ]
     // Assert.Equal(0, result1.SideEffects.Count)
-    // Assert.DoesNotContain(".heapStuff", formatted)
+    // Assert.DoesNotContain(".heapState", formatted)
     // Assert.Equal("\"lol\"", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
     ()
 }

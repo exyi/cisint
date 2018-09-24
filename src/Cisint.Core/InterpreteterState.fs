@@ -8,26 +8,32 @@ let indexParameter = SParameter.New CecilTools.intType "_index"
 
 let mutable private arrayDefaultCounter = 0L
 type ArrayInfo = {
+    /// Expression that returns the element of the array if it's not found in the `Constants`
     GeneralExpression: SExpr
+    /// When some elements of the array are known to be at constant index, they are stored here for easier access
     Constants: ImmutableDictionary<int, (SExpr)>
+    /// Length of the array, if it's known
     Length: SExpr option
-    CurrentVersion: int
 }
 with
-    static member Initialize elementType defaultValue =
-        let p = SParameter.New elementType (sprintf "array_default%d" (System.Threading.Interlocked.Increment(&arrayDefaultCounter)))
+    /// Creates an array with the default value everywhere and unknown length
+    static member Initialize defaultValue =
         {
           GeneralExpression = defaultValue
           Constants = dict<_, _>.Empty
-          CurrentVersion = 0
           Length = None
-          }
+        }
 
+/// Represents a state of the heap object
 type HeapObject = {
     Type: TypeRef
+    /// If the the is known exactly or if the object can also be derived from the `Type`
     TypeIsDefinite: bool
+    /// Known fields of the object. Unknown fields should not be in the dictionary and will be referenced as a expression of form `obj.field`.
     Fields: dict<FieldRef, SExpr>
+    /// If the object is an array, the additional data are stored here
     Array: ArrayInfo option
+    /// If the object may be shared with something else and all read/writes should be considered volatile
     IsShared: SExpr
 }
 
@@ -35,7 +41,7 @@ type HeapObject = {
 [<NoComparisonAttribute>]
 type AssumptionSet = {
     Version: AssumptionSetVersion
-    /// Set of expressions that are known to return true
+    /// Set of expressions that are known to be true
     Set: ImmutableHashSet<SExpr>
 
     /// Set of all objects on the heap
@@ -77,29 +83,43 @@ with
         | FieldRef f -> f.FieldType
         | ElementRef (_index, resultType) -> resultType
 
+/// Side effects with a condition
 type ConditionalEffect = (SExpr * SideEffect)
 
 and SideEffect =
+    /// Method is invoked. The result of the invocation is stored in `resultValue`. If the method does not have `globalEffect` it means that it should only have effect on it's arguments and result value.
     | MethodCall of MethodRef * resultValue: SParameter * args: SExpr array * virt: bool * globalEffect: bool * atState: AssumptionSet
+    /// A write operation to a shared field
     | FieldWrite of target: SParameter option * FieldOrElement * value: SExpr * atState: AssumptionSet
+    /// A read from a shared field
     | FieldRead of target: SParameter option * FieldOrElement * resultValue: SParameter * atState: AssumptionSet
+    /// Throw of an exception.
     | Throw of value: SParameter * atState: AssumptionSet
+    /// Represents an exception handled block of side effects. When the catchHandler is invoked, the exception is stored in `exceptionValue`
     | ExceptionHandledEffects of body: ConditionalEffect array * exceptionValue: SParameter * finallyHandler: SideEffect * catchHandler: SideEffect
+    /// Recursive list of conditional effects.
     | Effects of ConditionalEffect array
 
+/// Complete state of the program (including a log of side-effects, excluding instruction pointers)
 type ExecutionState = {
+    /// The state where this one was forked. This is mainly used for branching/marging the program state.
     Parent: ExecutionState option
+    /// List of program's side effects. (items from Parent state are not duplicated here)
     SideEffects: ConditionalEffect list
+    /// Conditions of this branch of the program state
     Conditions: SExpr array
+    /// All assumptions that hold about the program parameters (all conditions and objects)
     Assumptions: AssumptionSet
-    // AssumptionsVersion: AssumptionSetVersion
+    /// Objects that were changed in this branch of state
     ChangedHeapObjects: SParameter clist
+    /// All local variables used by the program
     Locals: dict<SParameter, SExpr>
+    /// The contents of the current IL evaluation state
     Stack: SExpr clist
 } with
     override x.ToString () =
         sprintf "State, %d side effects, %d objects, parent = { %O }" x.SideEffects.Count x.Assumptions.Heap.Count x.Parent
-    /// Get side effects incuding those from parent states
+    /// Get side effects including those from parent states
     member x.AllSideEffects =
         seq {
             match x.Parent with
@@ -174,9 +194,13 @@ type InterpreterFrameInfo = {
 type InterpreterFrameDispatcher = InterpreterFrameInfo clist -> (unit -> Task<ExecutionState * InterpreterReturnType>) -> Task<ExecutionState * InterpreterReturnType>
 
 type ExecutionServices = {
+    /// asynchronously dispatches a frame (i.e. a piece of computation)
     Dispatch: InterpreterFrameDispatcher
+    /// Return the state after the method invoked.
     InterpretMethod: MethodRef -> ExecutionState -> array<SExpr> -> ExecutionServices -> Task<ExecutionState>
+    /// When the MethodCall side effect is added, this info affects the `shared` and `global` flags, types of result and so on.
     GetMethodSideEffectInfo: MethodRef -> ExecutionServices -> MethodSideEffectInfo
+    /// Returns the state after the static field is accessed
     AccessStaticField: FieldRef -> ExecutionState -> ExecutionServices -> Task<SExpr * ExecutionState>
 }
 

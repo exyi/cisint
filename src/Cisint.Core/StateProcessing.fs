@@ -50,7 +50,8 @@ let stackConvert (expr: SExpr) (targetType: TypeRef) =
         if resultTypeAnalysis |> Seq.forall (fun (_, t, _) -> isDownCast t targetType) then
             SExpr.Cast InstructionFunction.Cast targetType expr
         else
-            failwith "Can't do implicit stack conversion %O -> %O, the result type was analysed and does not fit" expr.ResultType targetType
+            waitForDebug()
+            failwithf "Can't do implicit stack conversion %O -> %O, the result type was analysed and does not fit" expr.ResultType targetType
     else
         assertOrComplicated (not expr.ResultType.Reference.IsPointer && not targetType.Reference.IsPointer) "Can't work with pointers (implicit conversion)"
         softAssert false <| sprintf "Can't do implicit stack conversion %O -> %O" expr.ResultType targetType
@@ -527,7 +528,7 @@ let markSideEffectArguments (args: SExpr array) (argInfo: MethodArgumentEffect a
 let newArray len (elType: TypeRef) (state: ExecutionState) =
     let defaultVal, newObjects = createDefaultValue elType
     let state = state.ChangeObject newObjects
-    let array = { ArrayInfo.Initialize elType defaultVal with Length = len |> Option.map (fun e -> stackConvert e CecilTools.nintType) }
+    let array = { ArrayInfo.Initialize defaultVal with Length = len |> Option.map (fun e -> stackConvert e CecilTools.nintType) }
     let heapObj =
         { HeapObject.Type = TypeRef.CreateArray elType
           TypeIsDefinite = true
@@ -558,6 +559,7 @@ let private addResultObject (result: SParameter) heapType (isShared: bool) (stat
 
 let assertDecidableArgs (args: SExpr seq) =
     assertOrComplicated (args |> Seq.forall (fun a -> not a.IsUndecidable)) "Can't create a side effect with undecidable args."
+    assertOrComplicated (args |> Seq.forall (fun a -> not a.ResultType.Reference.IsByReference)) "passing reference to a side effect"
 
 let addCallSideEffect (m: MethodRef) (seInfo: MethodSideEffectInfo) args virt state =
     let args = IArray.ofSeq args
@@ -670,11 +672,17 @@ let setField target field value state =
             expr, (fun condition state ->
                 let hobj = state.Assumptions.Heap.[objectParam.Value]
                 let newValue =
+                    (
                     if condition = SExpr.ImmConstant true then
                         value
                     else
                         let currentValue = hobj.Fields.TryGet field |> Option.defaultWith (fun () -> SExpr.LdField field (Some (SExpr.Parameter objectParam.Value)))
-                        SExpr.Condition condition value currentValue |> ExprSimplifier.simplify state.Assumptions
+                        SExpr.Condition condition value currentValue
+                    ) |> ExprSimplifier.simplify state.Assumptions
+                // match newValue.Node with
+                // | SExprNode.InstructionCall (InstructionFunction.Add, _, EqArray.AP [ { Node = SExprNode.Constant (:? int as c) }; rest ]) when c = -1640531527 ->
+                //     waitForDebug()
+                // | _ -> ()
                 let hobj = { hobj with Fields = hobj.Fields.SetItem(field, newValue) }
                 state.ChangeObject [ objectParam.Value, hobj ]
             )
@@ -709,7 +717,7 @@ let setElement target index value state =
                 let newArray =
                     match index.Node with
                     | SExprNode.Constant ( :? int as index) ->
-                        { array with Constants = array.Constants.SetItem(index, newValue); CurrentVersion = array.CurrentVersion + 1 }
+                        { array with Constants = array.Constants.SetItem(index, newValue) }
                     | _ ->
                         let gExpr = getArrayElement array (SExpr.Parameter InterpreterState.indexParameter)
                         { array with

@@ -164,7 +164,6 @@ let ``simplifier smoke test`` () =
     let emptyAS = AssumptionSet.empty
     let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
     let paramB = SParameter.New (CecilTools.convertType typeof<int>) "b"
-    let paramC = SParameter.New (CecilTools.convertType typeof<int>) "c"
     let expr1 = ExprSimplifier.createExprFromQuot <@ fun a b -> a + b @> [paramA; paramB]
     let expr2 = ExprSimplifier.createExprFromQuot <@ fun a b -> b + a @> [paramA; paramB]
 
@@ -179,22 +178,58 @@ let ``simplifier smoke test`` () =
     )
 
 [<Fact>]
+let ``simplifier generic pattern`` () =
+    let simplifier = ExprSimplifier.createSimplifier [
+        ExprSimplifier.createPatternFromQuot
+            [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+            [ <@ fun a b -> a + b @>; <@ fun a b -> b + a @> ]
+        ExprSimplifier.createPatternFromQuot
+            [ typeof<CecilTools.GeneralSentinelType> ]
+            [ <@ fun a -> a = a @>; <@ fun _a -> true @> ]
+        ExprSimplifier.createPatternFromQuot
+            [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
+            [ <@ fun a b c -> (a + b) + c @>; <@ fun a b c -> a + (b + c) @> ]
+    ]
+    let simplifier = ExprSimplifier.simplify
+
+    let emptyAS = AssumptionSet.empty
+    let paramA = SParameter.New (CecilTools.convertType typeof<UInt16>) "a"
+    let paramB = SParameter.New (CecilTools.convertType typeof<UInt16>) "b"
+    let paramC = SParameter.New (CecilTools.convertType typeof<UInt16>) "c"
+    let expr1 = ExprSimplifier.createExprFromQuot <@ fun (a: UInt16) b c -> a + b + c @> [paramA; paramB; paramC]
+    let expr2 = ExprSimplifier.createExprFromQuot <@ fun (a: UInt16) b c -> c + b + a @> [paramA; paramB; paramC]
+    Assert.Equal(
+        ExprFormat.exprToString (simplifier emptyAS expr1),
+        ExprFormat.exprToString (simplifier emptyAS expr2))
+
+    let expr3 = ExprSimplifier.createExprFromQuot <@ fun a b -> b = a @> [paramA; paramA]
+    Assert.Equal("true", ExprFormat.exprToString (simplifier emptyAS expr3))
+
+
+
+[<Fact>]
 let ``simplifier constant collection test`` () =
     let simplifier = ExprSimplifier.createSimplifier basePatterns
+    // let simplifier = ExprSimplifier.simplify
     let emptyAS = AssumptionSet.empty
     let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
     let paramB = SParameter.New (CecilTools.convertType typeof<int>) "b"
     let expr1 = ExprSimplifier.createExprFromQuot <@ fun a b -> a + 1 + b + 23 @> [paramA; paramB]
     let expr2 = ExprSimplifier.createExprFromQuot <@ fun a b -> b + a + 23 + 1 @> [paramA; paramB]
 
-    Assert.Contains(
-        "24",
-        ExprFormat.exprToString (simplifier emptyAS expr1)
-    )
+    // Assert.Contains(
+    //     "24",
+    //     ExprFormat.exprToString (simplifier emptyAS expr1)
+    // )
     Assert.Equal(
-        simplifier emptyAS expr1,
-        simplifier emptyAS expr2
+        ExprFormat.exprToString (simplifier emptyAS expr1),
+        ExprFormat.exprToString (simplifier emptyAS expr2)
     )
+
+    let expr3 = ExprSimplifier.createExprFromQuot <@ fun a -> (-1640531527 + (a + 64)) @> [paramA]
+    Assert.Equal("(a + -1640531463)", ExprFormat.exprToString (simplifier emptyAS expr3))
+    let expr4 = ExprSimplifier.createExprFromQuot <@ fun a -> (-1640531527 + (a + (((-1640531527 + (a + 64)) <<< 6) + ((-1640531527 + (a + 64)) >>> 2)))) @> [paramA]
+    Assert.Equal("(a + (-1640531527 + (((a + -1640531463) << 6) + ((a + -1640531463) >> 2))))", ExprFormat.exprToString (simplifier emptyAS expr4))
 
 [<Fact>]
 let ``default simplifier conditions`` () =

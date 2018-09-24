@@ -145,6 +145,8 @@ let getOnlyElement (xs: #seq<'a>) =
     else
         None
 
+let removeWhitespace s = System.Text.RegularExpressions.Regex.Replace(s, "\\s", "")
+
 let optionExpect msg = function None -> failwithf "Option expectation failed: %s" msg | Some x -> x
 
 type TypeReference with
