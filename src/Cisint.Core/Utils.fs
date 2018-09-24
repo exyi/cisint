@@ -21,6 +21,7 @@ let waitForDebug () =
 
 let softAssert condition message =
     if not condition then
+        #if DEBUG
         if System.Environment.GetEnvironmentVariable "DEBUG" |> String.IsNullOrEmpty then
             failwithf "Assertion failed: %s" message
         else
@@ -32,7 +33,9 @@ let softAssert condition message =
             match Console.ReadKey(true).KeyChar with
             | 'c' -> ()
             | 'd' -> waitForDebug ()
-            | _ -> failwithf "Assertion failed: %s" message
+            | _ ->
+        #endif
+                failwithf "Assertion failed: %s" message
 
 type clist<'a> = list<'a>
 type array<'a> = ImmutableArray<'a>

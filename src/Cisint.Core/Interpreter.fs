@@ -629,7 +629,9 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                         }
                     | InterpreterTodoTarget.ExceptionHandlerEntry i ->
                         let handlers = methodDef.Body.ExceptionHandlers |> Seq.filter (fun h -> h.TryStart = i)
+#if DEBUG
                         printfn "Doing some exception handler at %O" methodref
+#endif
                         softAssert t.State.Stack.IsEmpty "Stack has to be empty when exception handler block starts"
                         let initState = t.State.WithCondition []
                         initState.AssertSomeInvariants() |> ignore
@@ -788,8 +790,9 @@ let interpretMethod (method: MethodRef) (state: ExecutionState) (args: array<SEx
         with
           | FunctionTooComplicatedException msg ->
             // function is too complicated => it's a side effect
-
+#if DEBUG
             printfn "Function %O is too complicated - %s" method msg
+#endif
 
             let result = addCallSideEffect method (execService.GetMethodSideEffectInfo method execService) args (*virt*)false state
             resultAsserts result
