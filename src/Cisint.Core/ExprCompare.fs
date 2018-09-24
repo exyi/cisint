@@ -60,6 +60,11 @@ let rec exprCompare (a: SExpr) (b: SExpr) =
                 compareObj (string a.Node, a.ResultType) (string b.Node, b.ResultType)
         )
 
+    let compareAndRecurse objA objB items =
+        let c = compareObj objA objB
+        if c <> 0 then c
+        else recurse items
+
     let procLValue a b =
             match (a, b) with
             | (SLExprNode.Dereference e, SLExprNode.Dereference e_p) ->
@@ -87,12 +92,18 @@ let rec exprCompare (a: SExpr) (b: SExpr) =
         when instruction_a = instruction_b && itype_a = itype_b && args_a.arr.Length = args_b.arr.Length ->
         recurse (Seq.zip args_a.arr args_b.arr)
     | (SExprNode.InstructionCall (instruction_a, itype_a, args_a), SExprNode.InstructionCall(instruction_b, itype_b, args_b)) ->
-        compareObj (string instruction_a, itype_a.FullName, args_a.arr.Length, a.ResultType.FullName) (string instruction_b, itype_b.FullName, args_b.arr.Length, b.ResultType.FullName)
+        compareAndRecurse
+            (string instruction_a, itype_a.FullName, args_a.arr.Length, a.ResultType.FullName)
+            (string instruction_b, itype_b.FullName, args_b.arr.Length, b.ResultType.FullName)
+            (Seq.zip args_a.arr args_b.arr)
     | (SExprNode.PureCall (method, args), SExprNode.PureCall (method_p, args_p))
         when method = method_p && args.arr.Length = args_p.arr.Length ->
         recurse (Seq.zip args.arr args_p.arr)
     | (SExprNode.PureCall (method_a, args_a), SExprNode.PureCall (method_b, args_b)) ->
-        compareObj (method_a.ToString(), args_a.arr.Length) (method_b.ToString(), args_b.arr.Length)
+        compareAndRecurse
+            (method_a.ToString(), args_a.arr.Length)
+            (method_b.ToString(), args_b.arr.Length)
+            (Seq.zip args_a.arr args_b.arr)
     | (SExprNode.LValue lv, SExprNode.LValue lv_p) -> procLValue lv lv_p
     | (SExprNode.Reference lv, SExprNode.Reference lv_p) -> procLValue lv lv_p
     | (SExprNode.Constant c_a, SExprNode.Constant c_b) ->
