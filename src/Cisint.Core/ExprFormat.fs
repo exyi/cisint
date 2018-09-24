@@ -70,26 +70,26 @@ let rec private csideEffectToString  (printObjectState) ((c, se): ConditionalEff
     else
         sprintf "if %s {\n%s\n}" (exprToString c) (sideEffectToString (fun a -> printObjectState (c :: a)) se |> tabRight)
 and private sideEffectToString  (printObjectState) (se: SideEffect) =
-    let heapStuff atState args =
+    let heapState atState args =
         let objState = printObjectState [] atState args
-        if String.IsNullOrEmpty objState then "" else sprintf ".heapStuff {\n%s\n}\n" (tabRight objState)
+        if String.IsNullOrEmpty objState then "" else sprintf ".heapState {\n%s\n}\n" (tabRight objState)
     match se with
     | SideEffect.MethodCall (m, resultValue, args, virt, globalEffect, atState) ->
         let core = sprintf "%O(%s)" m (String.Join(", ", args |> Seq.map exprToString))
         let core = if virt then "virt. " + core else core
         let core = if globalEffect then "global. " + core else core
         if m.ReturnType.FullName = "System.Void" then
-            heapStuff atState args + core
+            heapState atState args + core
         else
-            heapStuff atState args + sprintf "%s := %s" resultValue.Name core
+            heapState atState args + sprintf "%s := %s" resultValue.Name core
     | SideEffect.FieldRead (target, field, result, atState) ->
         let core = match target with Some(t) -> t.Name | _ -> ".static "
         let core = core + sprintf "[%O]" field
-        heapStuff atState (Option.toArray target |> Seq.map SExpr.Parameter |> IArray.ofSeq) + sprintf "%s := " result.Name + core
+        heapState atState (Option.toArray target |> Seq.map SExpr.Parameter |> IArray.ofSeq) + sprintf "%s := " result.Name + core
     | SideEffect.FieldWrite (target, field, value, atState) ->
         let core = match target with Some(t) -> t.Name | _ -> ".static "
         let core = core + sprintf "[%O]" field
-        heapStuff atState (Option.toArray target |> Seq.map SExpr.Parameter |> IArray.ofSeq) + sprintf "%s := %s" core (exprToString value)
+        heapState atState (Option.toArray target |> Seq.map SExpr.Parameter |> IArray.ofSeq) + sprintf "%s <- %s" core (exprToString value)
     | SideEffect.Effects e ->
         e |> Seq.map (fun s -> sprintf " * %s" (csideEffectToString printObjectState s |> tabRight)) |> joinLines
     | _ -> failwith "NIE"
@@ -166,7 +166,7 @@ let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
                         if objectConditionScope.[o] <> conditionScope then
                             endConditionScopeCleanup.Add (o, field)
                         todoObjects.Add value // recurse to objects
-                        let fieldName = if Seq.exists (fun f2 -> FieldRef(f2) = field) heapObj.Type.Definition.Fields then // TODO: generic fields
+                        let fieldName = if Seq.exists ((=) field) heapObj.Type.Fields then
                                             field.Name
                                         else sprintf "[%O]" field
                         sprintf "%s.%s = %s" o.Name fieldName (exprToString value)
@@ -194,7 +194,7 @@ let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
     if String.IsNullOrEmpty heapRoots then
         sideEffects
     else
-        sprintf "%s\n.heapStuff {\n%s\n}" sideEffects (tabRight heapRoots)
+        sprintf "%s\n.heapState {\n%s\n}" sideEffects (tabRight heapRoots)
 let dumpState (state: ExecutionState) =
     let flow = printStateFlow state state.Stack
     sprintf "%s\n\nreturn [\n%s\n]" flow (state.Stack |> Seq.map exprToString |> joinLines |> tabRight)
