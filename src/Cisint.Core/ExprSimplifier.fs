@@ -114,10 +114,17 @@ let createPatternFromQuot (parameters: #seq<System.Type>) (patterns: #seq<Quotat
 let private assignTypeParam (typeParameter: TypeRef) (assignee: TypeRef) =
     let rec v = SExpr.Visitor (fun node visitChildren ->
         let node = visitChildren node
-        if node.ResultType = typeParameter then
-            Some { node with ResultType = assignee }
-        else
-            Some node
+        let node =
+            if node.ResultType = typeParameter then
+                { node with ResultType = assignee }
+            else
+                node
+        let node =
+            match node.Node with
+            | SExprNode.InstructionCall (f, t, a) when t = typeParameter ->
+                { node with Node = SExprNode.InstructionCall (f, assignee, a) }
+            | _ -> node
+        Some node
     )
     v
 
@@ -145,6 +152,9 @@ let rec patternMatch (expr: SExpr) (pattern: SExpr) (vars: SParameter array) (ty
                 patternMatch e p vars typeVars |> Result.map (fun r -> r :: state_p)
             )
         ) args (Ok []) |> Result.bind mergeAssignments
+
+    // if typeVars.Length = 1 && expr.ResultType <> CecilTools.generalSentinelType && pattern.ResultType = CecilTools.generalSentinelType then
+    //     waitForDebug()
 
     let pattern =
         if typeVars.Contains(pattern.ResultType) then
@@ -486,7 +496,7 @@ let rec private simplifyExpressionCore (map: PatternMap) (assumptions: Assumptio
         match expr.SimplificationVersion with
         | (AssumptionSetVersion a) when a < assumptions.Version.Num || a = -1L ->
             let expr_s = simplifyHardcodedM assumptions expr |> visitChildren |> simplifyHardcodedM assumptions
-            Some (simplifyPatternsOneLevel map assumptions expr_s 1)
+            Some (simplifyPatternsOneLevel map assumptions expr_s 4)
         | _ ->
             Some expr
     ) a
@@ -560,7 +570,7 @@ let extendPatterns (patterns: #seq<SimplifierPattern>) =
     pmap.PatternMap.Values |> Seq.concat |> Seq.map snd |> Seq.distinct
 let createSimplifier (patterns: #seq<SimplifierPattern>) =
     let pmap = buildPatternMap patterns
-    simplifyExpression pmap 2
+    simplifyExpression pmap 4
 
 let defaultPatterns = [
     createPatternFromQuot
@@ -665,6 +675,25 @@ let defaultPatterns = [
     createPatternFromQuot
         [ typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType>; typeof<CecilTools.GeneralSentinelType> ]
         [ <@ fun a b c -> a * (b * c) @>; <@ fun a b c -> (a * b) * c @> ]
+
+    createPatternFromQuot
+        [ typeof<int>; typeof<int>; typeof<int> ]
+        [ <@ fun a b c -> (a + b) + c @>; <@ fun a b c -> a + (c + b) @> ]
+    createPatternFromQuot
+        [ typeof<int>; typeof<int>; typeof<int> ]
+        [ <@ fun a b c -> (a - b) + c + b @>; <@ fun a b c -> a + c @> ]
+    createPatternFromQuot
+        [ typeof<int>; typeof<int> ]
+        [ <@ fun a b -> (a + b) @>; <@ fun a b -> (b + a) @> ]
+    createPatternFromQuot
+        [ typeof<int> ]
+        [ <@ fun a -> (a + 0) @>; <@ fun a -> a @> ]
+    createPatternFromQuot
+        [ typeof<int>; typeof<int> ]
+        [ <@ fun a b -> a - b @>; <@ fun a b -> a + (-b) @> ]
+    createPatternFromQuot
+        [ typeof<int> ]
+        [ <@ fun a -> a - a @>; <@ fun a -> 0 @> ]
 ]
 
 let simplify = createSimplifier defaultPatterns
