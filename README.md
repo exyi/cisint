@@ -133,3 +133,7 @@ If you are looking for some demo, you can run the unit tests (`dotnet test` in `
 You can find more detailed into in
 * [API documentation](docs/api.md) - how to use the API and extensibility points
 * [Internals docs](docs/internals.md) - how it works. It may me useful in order to understand what's happening.
+
+## Project status
+
+This projects is rather a proof of concept than something you could really use. If you'd like to play with it you are welcome, you can post issues, pull requests or join discussion at [#cisint-chat:matrix.org](https://riot.im/app/#/room/#cisint-chat:matrix.org)
