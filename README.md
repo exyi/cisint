@@ -123,4 +123,13 @@ To figure out what is in the symbolic expressions, we have a simplifier -- it ta
 
 When looking at the result of the interpretation is not enough for you (because it was not able to understand something, you don't want it to implement something, ...) there are some extensibility option. The main "entry point function" `Interpreter.interpretMethod` takes an argument of type `ExecutionServices` which contains few function that you may find good to override. Specifically, you can provide custom implementation (or decorated version of the default one) of recursive `InterpretMethod`, custom logic for accessing static field (they may often contain predictable data, even though in general case we can't assume much about them). You may also provide information about method that are considered a side-effect and a dispatcher of computation frames, if you have a smart way of planning them.
 
+### Test/Demo
 
+If you are looking for some demo, you can run the unit tests (`dotnet test` in `src/Cisint.Tests`) and then have a look in the `bin/Debug/netcoreapp2.0/state_dump` directory. There are printed out versions of the execution state after the corresponding method from `TestInputs.fs` were executed. You can of course add you own ones if you want to see what it does to your piece of code.
+
+
+## Docs
+
+You can find more detailed into in
+* [API documentation](docs/api.md) - how to use the API and extensibility points
+* [Internals docs](docs/internals.md) - how it works. It may me useful in order to understand what's happening.

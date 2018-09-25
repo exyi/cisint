@@ -35,7 +35,7 @@ type InstructionFunction =
     | Cast = 20
     /// Loads length of an array
     | ArrLen = 22
-    /// Sentinel value for undecidable values. (State of variables after ommited exception handler, anything computed from other undecidables)
+    /// Sentinel value for undecidable values. (State of variables after omitted exception handler, anything computed from other undecidables)
     | Undecidable = 23
 
 [<CustomComparisonAttribute>]
@@ -43,7 +43,7 @@ type InstructionFunction =
 type AssumptionSetVersion = AssumptionSetVersion of int64
 with
     interface IEquatable<AssumptionSetVersion> with
-        /// Always return true, the version number should be ingored (almost) everywhere it's used
+        /// Always return true, the version number should be ignored (almost) everywhere it's used
         member _a.Equals(_b) = true
     override _a.Equals(b) = b :? AssumptionSetVersion
     override _a.GetHashCode() = 76434567
