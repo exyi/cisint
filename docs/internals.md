@@ -6,7 +6,7 @@ In principle, the symbolic execution engine is pretty simple (it only uses compl
 
 Most non-trivial modifications of the state is handled by the StateProcessing module. Most of the code is concerned about the task "I want to modify an object but I have an expression", the core of this logic is in the `accessObjectProperty` function which walks through the expression, finds all object or parameter references and does some operation on it.
 
-For example, suppose we have a expression `if (x) { obj1 } else { obj2 }` and try to set the `field1` to `1`. The `setField` function will set the `obj1.field1` to `if (x) { 1 } else { old value of obj1.field1 }` and `obj2.field1` to `if (!x) { 1 } else { old value of obj2.field1 }`. If we'd try to read the value after the write, the `accessField` function will return `if (x) { value from obj1.field1 } else { value from obj2.field1 }`, which will be `if (x) { if (x) { 1 } else { old value of obj1.field1 } } else { if (!x) { 1 } else { old value of obj2.field1 } }`. After that, this expression is simplified into `1` by the expression simplifier. If the object would be shared, all writes and reads are a side-effect, so the `setField` or `accessField` might add some side-effects.
+For example, suppose we have an expression `if (x) { obj1 } else { obj2 }` and try to set the `field1` to `1`. The `setField` function will set the `obj1.field1` to `if (x) { 1 } else { old value of obj1.field1 }` and `obj2.field1` to `if (!x) { 1 } else { old value of obj2.field1 }`. If we'd try to read the value after the write, the `accessField` function will return `if (x) { value from obj1.field1 } else { value from obj2.field1 }`, which will be `if (x) { if (x) { 1 } else { old value of obj1.field1 } } else { if (!x) { 1 } else { old value of obj2.field1 } }`. After that, this expression is simplified into `1` by the expression simplifier. If the object would be shared, all writes and reads are a side-effect, so the `setField` or `accessField` might add some side-effects.
 
 ### State branching
 
@@ -21,7 +21,7 @@ let x obj1 =
         obj1.field <- 4
 ```
 
-It will contain a branch instruction that depends on the value of `obj1.field2` and suppose we don't know what's inside. First, we will set the `field` to a constant `3`. Then we will fork the state and in the first branch change it's value to `4`. When we come to the end of the function, we will merge the changes of the objects and assign conditional expression into the changed fields (it will be `field = if obj1.field then 4 else 3`).
+It will contain a branch instruction that depends on the value of `obj1.field2` and suppose we don't know what's inside. First, we will set the `field` to a constant `3`. Then we will fork the state and in the first branch change its value to `4`. When we come to the end of the function, we will merge the changes of the objects and assign conditional expression into the changed fields (it will be `field = if obj1.field then 4 else 3`).
 
 ### Method calls
 
