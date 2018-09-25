@@ -4,10 +4,6 @@ open System.Collections.Immutable
 open System.Threading
 open TypesystemDefinitions
 
-//type SExprConfig = {
-//    CheckedArtithmetic: bool
-//}
-
 type InstructionFunction =
     | Add = 0
     | And = 1
@@ -18,6 +14,7 @@ type InstructionFunction =
     | Convert = 6
     | Convert_Checked = 7
     | Div = 8
+    /// Cast that return null if it's not successful
     | IsInst = 9
     | Mul = 10
     /// Twos-complement negation, aka minus
@@ -28,14 +25,17 @@ type InstructionFunction =
     | BitNot = 21
     | Or = 13
     | Rem = 14
+    /// Shift right (unsigned argument -> logical, signed argument -> arithmetic)
     | Shr = 15
+    /// Shift left
     | Shl = 16
     | Sub = 17
-    | Unbox = 18
     | Xor = 19
+    /// Cast that throws an exception if it's not successful
     | Cast = 20
+    /// Loads length of an array
     | ArrLen = 22
-    // Sentinel value for undecidable values. (State of variables after ommited exception handler, anything computed from other undecidables)
+    /// Sentinel value for undecidable values. (State of variables after ommited exception handler, anything computed from other undecidables)
     | Undecidable = 23
 
 [<CustomComparisonAttribute>]
@@ -61,25 +61,37 @@ with static member New resultType name =
         { Type = resultType; Name = name; Id = Guid.NewGuid() }
 
 [<StructuralEqualityAttribute>] [<NoComparisonAttribute>]
+/// Writable value. For practical purposes, all LValues are basically equivalent to Parameter as the LdField, LdElement and Dereference are only used to introduce a virtual symbolic parameter when something that is not known is referenced.
 type SLExprNode =
+    /// Load of object field when the value of the field is not known.
     | LdField of FieldRef * target: SExpr option
+    /// Load of array element when the value of the element is not known.
     | LdElement of target: SExpr * index: SExpr
+    /// Load of parameter
     | Parameter of SParameter
+    /// Dereference of a reference expression (when the value is not known)
     | Dereference of SExpr
 
+/// Discriminated union of symbolic tree node types
 and SExprNode =
+    /// Reference to LValue
     | Reference of SLExprNode
+    /// Read of LValue
     | LValue of SLExprNode
+    /// Invocation of a pure function
     | PureCall of MethodRef * args: SExpr EqArray
+    /// Invocation of a primitive function
     | InstructionCall of InstructionFunction * TypeRef * args: SExpr EqArray
+    /// Conditional expression (if condition then ifTrue else ifFalse)
     | Condition of condition: SExpr * ifTrue: SExpr * ifFalse: SExpr
+    /// Constant expression. The type is declared in the enclosing SExpr.
     | Constant of obj
+/// Symbolic expression
 and SExpr = {
     ResultType: TypeRef
     NodeLeavesRank: int
     NodeRank: int64
     Node: SExprNode
-//    Config: SExprConfig
     SimplificationVersion: AssumptionSetVersion
 }
 with
@@ -95,6 +107,7 @@ with
      static member InstructionCall func resultType (args: #seq<_>) =
         let node = InstructionCall (func, resultType, ImmutableArray.CreateRange(args) |> EqArray.New)
         SExpr.New resultType node
+     /// Creates a cast operation if type of the `node` is different than the expected type
      static member Cast func rtype node =
         if node.ResultType = rtype && (func <> InstructionFunction.IsInst || rtype.IsObjectReference) then node
         else SExpr.InstructionCall func rtype [ node ]

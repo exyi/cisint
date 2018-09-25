@@ -51,7 +51,6 @@ let rec exprToString expr =
                     | InstructionFunction.IsInst
                     | InstructionFunction.Convert_Checked
                     | InstructionFunction.Convert
-                    | InstructionFunction.Unbox
                     | InstructionFunction.Cast -> failwith ""
                     | _ -> failwith ""
         sprintf "(%s %s %s)" (exprToString a) op (exprToString b)

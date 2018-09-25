@@ -49,7 +49,6 @@ let createExprFromQuot (quotation: Quotations.Expr) (parameters: #seq<_>) =
                     | "op_Division" -> Some InstructionFunction.Div
                     | "op_Modulus" -> Some InstructionFunction.Rem
                     | "Box" -> Some InstructionFunction.Cast
-                    | "Unbox" -> Some InstructionFunction.Unbox
                     | "op_BitwiseAnd" -> Some InstructionFunction.And
                     | "op_BitwiseOr" -> Some InstructionFunction.Or
                     | "op_LogicalNot" | "Not" -> Some InstructionFunction.Not
