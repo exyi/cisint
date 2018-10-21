@@ -147,11 +147,15 @@ let rec private interpretInstruction genericAssigner ((instr, prefixes): Cil.Ins
         if expectedTypes <> [] && not (List.contains result.ResultType expectedTypes) then failwithf "Can't load dereference to %O, one of %O was expected" result.ResultType expectedTypes
         InterpretationResult.NewState { state with Stack = stackLoadConvert result :: state.Stack }
 
-    let storeIndirect (state: ExecutionState) value =
+    let storeValueIndirect (state: ExecutionState) value =
         let [addr], state = state.PopStack 1
         if not addr.ResultType.Reference.IsByReference then
             tooComplicated (sprintf "Can't store indirect to expression of type %O" addr.ResultType)
-        InterpretationResult.NewState (StateProcessing.setReference addr value state)
+        let referenceType = (addr.ResultType.Reference :?> ByReferenceType).ElementType |> TypeRef
+        InterpretationResult.NewState (StateProcessing.setReference addr (stackConvert value referenceType) state)
+    let storeIndirect () =
+        let [ value], state = state.PopStack 1
+        storeValueIndirect state value
 
     let typeOperand = lazy TypeRef ((instr.Operand :?> TypeReference).ResolvePreserve(genericAssigner))
 
@@ -379,12 +383,16 @@ let rec private interpretInstruction genericAssigner ((instr, prefixes): Cil.Ins
     elif op = OpCodes.Ldind_Ref then loadIndirect [] // may load any reference type
     elif op = OpCodes.Ldind_I then loadIndirect [CecilTools.nintType]
 
+    elif op = OpCodes.Stobj then
+        let _typeTok = (instr.Operand :?> Mono.Cecil.TypeReference).ResolvePreserve genericAssigner |> TypeRef
+        storeIndirect ()
+
     elif op = OpCodes.Initobj then
         let typeTok = (instr.Operand :?> Mono.Cecil.TypeReference).ResolvePreserve genericAssigner |> TypeRef
         let newValue, objects =
             StateProcessing.createDefaultValue typeTok
         let state = state.ChangeObject objects
-        storeIndirect state newValue
+        storeValueIndirect state newValue
     // TODO: Stind
 
     elif op = OpCodes.Newobj then

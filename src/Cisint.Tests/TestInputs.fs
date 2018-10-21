@@ -110,9 +110,13 @@ type Something = class
         h.Add(43, "a")
         h.Add(76543, "b")
         h.Add(5355, "c")
-        if h.ContainsKey(a) then
-            h.[a]
-        else "lol"
+        // if h.ContainsKey(a) then
+        //     h.[a]
+        // else "lol"
+
+        match h.TryGetValue a with
+        | (true, a) -> a
+        | _ -> "lol"
 
     static member SimpleTryFinally (a: int) =
         try
