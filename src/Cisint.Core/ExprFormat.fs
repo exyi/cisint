@@ -22,7 +22,7 @@ let rec exprToString expr =
     match expr.Node with
     | SExprNode.Constant null -> sprintf "null<%s>" expr.ResultType.Name
     | SExprNode.Constant c ->
-        if expr.ResultType.IsPrimitive then
+        if expr.ResultType.IsPrimitive || expr.ResultType = CecilTools.stringType then
             sprintf "%A" c
         else
             sprintf "c<%O>(%O)" expr.ResultType c
@@ -142,6 +142,22 @@ let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
                                         else sprintf "[%O]" field
                         sprintf "%s.%s = %s" o.Name fieldName (exprToString value)
                     )
+                    |> Seq.append (seq {
+                        match heapObj.Array with
+                        | None -> ()
+                        | Some array ->
+                            match array.Length with
+                            | Some l -> yield ("Length", l)
+                            | None -> ()
+
+                            for KeyValue (k, v) in (array.Constants |> Seq.sortBy (fun a -> a.Key)) do
+                                yield (string k, v)
+
+                            yield ("*", array.GeneralExpression)
+                    } |> Seq.map (fun (k, v) ->
+                        todoObjects.Add v
+                        sprintf "%s.[%s] = %s" o.Name k (exprToString v)
+                    ))
                 [
                     if heapObj.TypeIsDefinite then
                         yield sprintf "let %s = new %O" o.Name o.Type
@@ -153,6 +169,7 @@ let printStateFlow (state: ExecutionState) (heapRoots: #seq<SExpr>) =
                     elif heapObj.IsShared <> SExpr.ImmConstant false then
                         yield sprintf "shared %s iff %s" o.Name (exprToString heapObj.IsShared)
                     yield! fieldAssignments
+                    yield ""
                 ]
             | (true, oldObj) when oldObj = heapObj ->
                 []

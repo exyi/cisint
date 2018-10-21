@@ -47,4 +47,5 @@ let intType = convertType typeof<int>
 let nintType = convertType typeof<IntPtr>
 let nuintType = convertType typeof<UIntPtr>
 let enumType = convertType typeof<System.Enum>
+let stringType = convertType typeof<System.String>
 let generalSentinelType = convertType typeof<GeneralSentinelType>

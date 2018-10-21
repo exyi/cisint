@@ -235,3 +235,5 @@ type FieldReference with
         let newField = Mono.Cecil.FieldReference(x.Name, x.FieldType, t)
         newField.MetadataToken <- x.MetadataToken
         newField
+
+

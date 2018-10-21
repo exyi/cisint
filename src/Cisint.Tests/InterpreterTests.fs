@@ -25,6 +25,7 @@ let execService =
         Dispatch = dispatcher
         AccessStaticField = Interpreter.aBitSmartReadStaticField
     }
+    |> Reimplementations.Dictionary.reimplementDictionary
 
 printfn "Current directory is %s" (IO.Directory.GetCurrentDirectory())
 
@@ -258,9 +259,13 @@ let ``iterators and lambdas - FSharpLambdasAndSeq`` () = task {
 
 [<Fact>]
 let ``hash table constant - UseHashTable`` () = task {
-    let! result1, formatted = interpretMethod "UseHashTable" "constant_a" state [ SExpr.ImmConstant 2 ]
-    // Assert.Equal(0, result1.SideEffects.Count)
-    // Assert.DoesNotContain(".heapState", formatted)
-    // Assert.Equal("\"lol\"", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    let! result1, formatted1 = interpretMethod "UseHashTable" "constant_a" state [ SExpr.ImmConstant 2 ]
+    let! result2, formatted2 = interpretMethod "UseHashTable" "constant_b" state [ SExpr.ImmConstant 43 ]
+    Assert.Equal(0, result1.SideEffects.Count)
+    Assert.Equal(0, result2.SideEffects.Count)
+    Assert.DoesNotContain(".heapState", formatted1)
+    Assert.DoesNotContain(".heapState", formatted2)
+    Assert.Equal("\"lol\"", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    Assert.Equal("\"a\"", List.exactlyOne result2.Stack |> ExprFormat.exprToString)
     ()
 }

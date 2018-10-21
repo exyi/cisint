@@ -501,12 +501,12 @@ let forcedComplicatedMethods = set [
     "System.String System.SR::GetResourceString(System.String,System.String)"
 ]
 
-let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args: SExpr array) (execService: ExecutionServices) =
-    let methodDef = methodref.Definition
-    let method = methodref.Reference
+let rec interpretMethodCore (methodRef: MethodRef) (state: ExecutionState) (args: SExpr array) (execService: ExecutionServices) =
+    let methodDef = methodRef.Definition
+    let method = methodRef.Reference
     if forcedComplicatedMethods.Contains methodDef.FullName || forcedComplicatedMethods.Contains method.FullName then
         tooComplicated "Method is on blacklist"
-    let genericAssigner = methodref.GenericParameterAssigner
+    let genericAssigner = methodRef.GenericParameterAssigner
     softAssert (not methodDef.DeclaringType.IsInterface) "Can't invoke interface method directly"
     assertOrComplicated (methodDef.Body <> null) "method does not have body"
     assertOrComplicated (not method.HasGenericParameters) "method contains unbound generic parameters"
@@ -514,11 +514,20 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
     let allParameters = Seq.append (if methodDef.IsStatic then [] else [methodDef.Body.ThisParameter]) method.Parameters |> IArray.ofSeq
     softAssert (methodDef.Body.Variables |> Seq.mapi (fun i v -> v.Index = i) |> Seq.forall id) "variable indices don't fit"
     softAssert (allParameters |> Seq.mapi (fun i v -> v.Sequence = i) |> Seq.forall id) "parameter indices don't fit"
-    softAssert (args |> Seq.zip methodref.ParameterTypes |> Seq.forall (fun (t, a) -> a.ResultType = t)) <| sprintf "Method argument mismatch %O <- %A" methodref (args |> Seq.map (fun a -> a.ResultType) |> Seq.toArray)
+    softAssert
+        (args |> Seq.zip methodRef.ParameterTypes |> Seq.forall (fun (t, a) ->
+            /// If the expression contains fields from the expected type - may be true for object with replaced implementation
+            let hasForeignField a =
+                StateProcessing.getObjectsFromExpressions state.Assumptions [a]
+                |> Seq.choose state.Assumptions.Heap.TryGet
+                |> Seq.forall (fun obj -> obj.Fields |> Seq.exists(fun (KeyValue(f, _)) -> ExprSimplifier.isDownCast f.DeclaringType t))
 
-    let frameInfo = { InterpreterFrameInfo.Method = methodref; Args = args; FrameToken = obj(); CurrentInstruction = null; BranchingFactor = 1 }
+            a.ResultType = t || hasForeignField a))
+        (sprintf "Method argument mismatch %O <- %A" methodRef (args |> Seq.map (fun a -> a.ResultType) |> Seq.toArray))
 
-    // printfn "Interpreting Core %O" methodref
+    let frameInfo = { InterpreterFrameInfo.Method = methodRef; Args = args; FrameToken = obj(); CurrentInstruction = null; BranchingFactor = 1 }
+
+    // printfn "Interpreting Core %O" methodRef
     // method.Body.Instructions |> Seq.iter (printfn "\t%O")
 #if DEBUG
     try
@@ -630,7 +639,7 @@ let rec interpretMethodCore (methodref: MethodRef) (state: ExecutionState) (args
                     | InterpreterTodoTarget.ExceptionHandlerEntry i ->
                         let handlers = methodDef.Body.ExceptionHandlers |> Seq.filter (fun h -> h.TryStart = i)
 #if DEBUG
-                        printfn "Doing some exception handler at %O" methodref
+                        printfn "Doing some exception handler at %O" methodRef
 #endif
                         softAssert t.State.Stack.IsEmpty "Stack has to be empty when exception handler block starts"
                         let initState = t.State.WithCondition []

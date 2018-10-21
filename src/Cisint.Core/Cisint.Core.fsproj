@@ -14,6 +14,8 @@
     <Compile Include="ExprFormat.fs" />
     <Compile Include="Interpreter.fs" />
     <Compile Include="Library.fs" />
+
+    <Compile Include="./Reimplementations/Dictionary.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="ICSharpCode.Decompiler" Version="3.1.0.3652" />
