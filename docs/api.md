@@ -89,7 +89,7 @@ let supressMethod4 s =
                 // add a side effect instead of interpreting the method
                 StateProcessing.addCallSideEffect method (services.GetMethodSideEffectInfo method services) args (*virt*)false state |> System.Threading.Tasks.Task.FromResult
             else
-                Interpreter.defaultServices.InterpretMethod method state args services    
+                s.InterpretMethod method state args services    
     }
 
 ... more functions like this
