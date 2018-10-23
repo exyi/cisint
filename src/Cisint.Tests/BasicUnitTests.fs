@@ -277,7 +277,7 @@ let ``simplifier - type checks on Int32`` () =
 let ``basic overload resolution`` () =
     let o = CecilTools.convertType typeof<TestRecord>
     let m = CecilTools.objType.Definition.Methods |> Seq.find (fun m -> m.Name = "GetHashCode") |> MethodRef
-    let m2 = StateProcessing.findOverridenMethod o m
+    let m2 = StateProcessing.findOverriddenMethod o m
     Assert.Equal(o, m2.DeclaringType)
 
 [<Fact>]
@@ -288,7 +288,7 @@ let ``generic overload resolution`` () =
         TypeRef p.PropertyType
     Assert.Equal("Microsoft.FSharp.Core.FSharpOption`1<System.String>", o.ToString())
     let m = CecilTools.objType.Definition.Methods |> Seq.find (fun m -> m.Name = "GetHashCode") |> MethodRef
-    let m2 = StateProcessing.findOverridenMethod o m
+    let m2 = StateProcessing.findOverriddenMethod o m
     Assert.Equal(o, m2.DeclaringType)
     Assert.Equal("System.Int32 Microsoft.FSharp.Core.FSharpOption`1<System.String>::GetHashCode()", m2.ToString())
 
@@ -302,7 +302,7 @@ let ``not so generic overload resolution`` () =
     Assert.Equal("Cisint.Tests.TestInputs.GenericVirtType`1<System.String>", o1.ToString())
     let m = (o1.Definition.Methods |> Seq.find (fun m -> m.Name = "Nothing")).RebaseOn(o1.Reference).ResolvePreserve(o1.GenericParameterAssigner) |> MethodRef
     Assert.Equal("System.Boolean Cisint.Tests.TestInputs.GenericVirtType`1<System.String>::Nothing(x)", m.ToString())
-    let m2 = StateProcessing.findOverridenMethod o2 m
+    let m2 = StateProcessing.findOverriddenMethod o2 m
     Assert.Equal(o2, m2.DeclaringType)
     Assert.Equal("System.Boolean Cisint.Tests.TestInputs.NotSoGenericType::Nothing(System.String)", m2.ToString())
 

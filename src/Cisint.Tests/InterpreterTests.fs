@@ -11,7 +11,8 @@ open TypesystemDefinitions
 open StateProcessing
 let testMethod =
     let t = (CecilTools.convertType typeof<Something>)
-    fun name -> t.Definition.Methods |> Seq.find (fun m -> m.Name = name) |> MethodRef
+    let tCsharp = (CecilTools.convertType typeof<Cisint.CsharpTestInputs.Class1>)
+    fun name -> Seq.append t.Methods tCsharp.Methods |> Seq.find (fun m -> m.Name = name)
 
 let state = ExecutionState.Empty
 let dispatcher = Interpreter.createSynchronousDispatcher (fun frames ->
@@ -269,3 +270,19 @@ let ``hash table constant - UseHashTable`` () = task {
     Assert.Equal("\"a\"", List.exactlyOne result2.Stack |> ExprFormat.exprToString)
     ()
 }
+
+
+[<Fact>]
+let ``hash table - PlayWithSomeControl`` () = task {
+    let paramWriter = SParameter.New (CecilTools.convertType typeof<Cisint.CsharpTestInputs.IWriter>) "writer"
+    let! result1, formatted1 = interpretMethod "PlayWithSomeControl" "constant_mode" state [ SExpr.Parameter paramWriter; SExpr.ImmConstant 0 ]
+    // let! result2, formatted2 = interpretMethod "PlayWithSomeControl" "constant_b" state [ SExpr.ImmConstant 43 ]
+    // Assert.Equal(0, result1.SideEffects.Count)
+    // Assert.Equal(0, result2.SideEffects.Count)
+    // Assert.DoesNotContain(".heapState", formatted1)
+    // Assert.DoesNotContain(".heapState", formatted2)
+    // Assert.Equal("\"lol\"", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    // Assert.Equal("\"a\"", List.exactlyOne result2.Stack |> ExprFormat.exprToString)
+    ()
+}
+

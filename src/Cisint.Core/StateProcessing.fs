@@ -341,7 +341,7 @@ let rec analyseReturnType (expr: SExpr) state =
             (analyseReturnType ifFalse state |> List.map (fun (c, e, d) -> ExprSimplifier.simplify state.Assumptions (SExpr.BoolAnd (SExpr.BoolNot cond) c), e, d))
     | _ -> [ SExpr.ImmConstant true, expr.ResultType, false ]
 
-let rec findOverridenMethod (t: TypeRef) (m: MethodRef) =
+let rec findOverriddenMethod (t: TypeRef) (m: MethodRef) =
     if TypeRef(m.Reference.DeclaringType) = t || t.Definition.IsInterface then
         m
     else
@@ -356,8 +356,8 @@ let rec findOverridenMethod (t: TypeRef) (m: MethodRef) =
         explicitOverride
             |> Option.orElseWith matchedOverride
             |> Option.defaultWith (fun () ->
-                softAssert t.BaseType.IsSome <| sprintf "Can't find overriden method %O on type %O" m t
-                findOverridenMethod t.BaseType.Value m)
+                softAssert t.BaseType.IsSome <| sprintf "Can't find overridden method %O on type %O" m t
+                findOverriddenMethod t.BaseType.Value m)
 /// Returns devirtualization info - list of (condition, method called, if it's virtual)
 let devirtualize (m: MethodRef) (args: array<SExpr>) state =
     if not m.Definition.IsVirtual then
@@ -366,7 +366,7 @@ let devirtualize (m: MethodRef) (args: array<SExpr>) state =
 
     let targetTypes = analyseReturnType args.[0] state
                       |> List.map (fun (condition, t, definite) ->
-                          condition, findOverridenMethod t m, not (definite || t.Definition.IsSealed || t.Definition.IsValueType)
+                          condition, findOverriddenMethod t m, not (definite || t.Definition.IsSealed || t.Definition.IsValueType)
                       )
                       |> List.groupBy (fun (_c, m, d) -> m, d)
     if targetTypes.Length = 1 then

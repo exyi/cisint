@@ -71,14 +71,20 @@ module EqArray =
 module IArray =
     // PERF: maybe these should inline
     let map f (arr: 'a array) =
-        let b = ImmutableArray.CreateBuilder(arr.Length)
+        let b = ImmutableArray.CreateBuilder arr.Length
         for i in arr do
             b.Add(f i)
         b.MoveToImmutable()
     let mapi f (arr: 'a array) =
-        let b = ImmutableArray.CreateBuilder(arr.Length)
+        let b = ImmutableArray.CreateBuilder arr.Length
         for i = 0 to arr.Length - 1 do
             b.Add(f i arr.[i])
+        b.MoveToImmutable()
+    let map2 f (arr1: 'a array) (arr2: 'b array) =
+        let length = min arr1.Length arr2.Length
+        let b = ImmutableArray.CreateBuilder length
+        for i in 0..(length-1) do
+            b.Add (f arr1.[i] arr2.[i])
         b.MoveToImmutable()
     let collect (f: 'a -> #seq<'b>) (arr: 'a array) =
         let b = ImmutableArray.CreateBuilder()

@@ -3,8 +3,8 @@
     <TargetFramework>netcoreapp2.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Cisint.Core\Cisint.Core.fsproj" />
-    <ProjectReference Include="..\Cisint.CsharpTestInputs\Cisint.CsharpTestInputs.csproj" />
+    <ProjectReference Include="../Cisint.Core/Cisint.Core.fsproj" />
+    <ProjectReference Include="../Cisint.CsharpTestInputs/Cisint.CsharpTestInputs.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="TestInputs.fs" />

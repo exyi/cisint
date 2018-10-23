@@ -336,12 +336,12 @@ let rec private interpretInstruction genericAssigner ((instr, prefixes): Cil.Ins
         let returnI = if prefixes.Tail then None; else Some instr.Next
         let args, state = state.PopStack (method.Parameters.Count + if method.HasThis then 1 else 0)
         if op = OpCodes.Callvirt && prefixes.Constrained.IsSome then
-            let overridenMethod = findOverridenMethod prefixes.Constrained.Value (MethodRef method)
-            if overridenMethod.DeclaringType = prefixes.Constrained.Value then
-                // the function is overriden -> invoke it directly
-                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (overridenMethod, args, returnI, true) } ]
+            let overriddenMethod = findOverriddenMethod prefixes.Constrained.Value (MethodRef method)
+            if overriddenMethod.DeclaringType = prefixes.Constrained.Value && not prefixes.Constrained.Value.IsObjectReference then
+                // the function is overridden on a value type -> invoke it directly
+                InterpretationResult.Branching [ { InterpreterTodoItem.State = state; Target = InterpreterTodoTarget.CallMethod (overriddenMethod, args, returnI, true) } ]
             else
-                // it's not overriden -> invoke the base implementation with boxing and stuff
+                // it's not overridden -> invoke the base implementation with boxing and stuff
                 // it's only used for object.ToString, object.GetHashCode and so on, which don't mutate the object => we can ignore the copyReference
                 let firstArg, state = dereference args.Head state
                 let args = ((SExpr.InstructionCall InstructionFunction.Cast CecilTools.objType [ firstArg ]) :: args.Tail)
@@ -625,7 +625,7 @@ let rec interpretMethodCore (methodRef: MethodRef) (state: ExecutionState) (args
                         let savedStack = state.Stack
                         let state = { state with Stack = [] }
                         let recurse = if virt then interpretVirtualMethod else execService.InterpretMethod
-                        let args = IArray.ofSeq (Seq.map2 stackConvert args m.ParameterTypes) |> IArray.map (ExprSimplifier.simplify state.Assumptions)
+                        let args = IArray.map2 stackConvert (IArray.ofSeq args) m.ParameterTypes |> IArray.map (ExprSimplifier.simplify state.Assumptions)
                         fun () -> task {
                             let! resultState = recurse m state args execService
                             softAssert (LanguagePrimitives.PhysicalEquality resultState.Parent state.Parent) "Can't change parent by interpreting"
