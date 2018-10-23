@@ -163,3 +163,24 @@ let initialState = ExecutionState.Empty.ChangeObject [ objParameter, object ]
 Interpreter.interpretMethod method1 state (IArray.ofSeq [SExpr.Parameter object]) execService
 
 ```
+
+You can replace the implementation of entire type by calling helper function `Interpreter.reimplementType`:
+
+```F#
+Interpreter.reimplementType
+        (fun (t: TypeRef) -> t is something) // match the type to be replaces
+        (fun (m: MethodRef) ->
+		anotherMethod // find corresponding method to every method on that types
+	)
+```
+
+Or, if you wish, you can reimplement the target type in one class while preserving all the method names and signatures and let another helper function find the corresponding matching for you:
+
+```F#
+Interpreter.reimplementType
+	(fun (t: TypeRef) -> t is something)
+	(Interpreter.findMatchingMethodOnType (CecilTools.convertTypeToRaw typedefof<DictionaryReimpl<int, int>>))
+```
+
+Note that the method expects raw Cecil `TypeDefinition` and it supports open generic types that will be filed according to the type parameters of the DeclaringType of a method. Also note that this does not "replace" accesses to **fields** on the target type, so if the type has some public field this replacement may lead to incorrect behavior.
+

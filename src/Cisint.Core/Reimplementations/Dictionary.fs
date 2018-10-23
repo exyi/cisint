@@ -118,44 +118,7 @@ type private DictionaryReimpl<'k, 'v> when 'k : equality () = class
 
 end
 
-let private getType (t: TypeRef) =
-    let rawType = CecilTools.convertTypeToRaw typedefof<DictionaryReimpl<int, int>>
-    let generic = Mono.Cecil.GenericInstanceType rawType
-    for i in t.Definition.GenericParameters do
-        generic.GenericArguments.Add i
-    let generic = generic.ResolvePreserve t.GenericParameterAssigner
-    printfn "Converted %O -> %O" t generic
-    TypeRef generic
-let private findMatchingMethod (method: MethodRef) =
-    let dt = getType method.DeclaringType
-    let translateArgType (t: TypeRef) =
-        TypeRef (t.Reference.ResolvePreserve (fun t -> if TypeRef.AreSameTypes t method.DeclaringType.Reference then
-                                                           Some dt.Reference
-                                                       else None))
-    dt.Methods |> Seq.tryFind (fun m ->
-        m.Name = method.Name && m.ParameterTypes.Length = method.ParameterTypes.Length && (m.ParameterTypes |> IArray.map translateArgType) = (method.ParameterTypes |> IArray.map translateArgType))
-
-
-let reimplementDictionary (e: ExecutionServices) =
-    { e with
-        InterpretMethod = fun method state args services ->
-            if method.DeclaringType.Definition.FullName = "System.Collections.Generic.Dictionary`2" then
-                let m2 = findMatchingMethod method |> Option.defaultWith (fun x -> failwithf "Could not find reimplementation for %O" method)
-                printfn "Replacing %O with %O" method m2
-
-                let state =
-                    if method.Name = ".ctor" then
-                        // initialize the object before invoking constructor
-                        let (newObjP, state) = StateProcessing.createEmptyHeapObject m2.DeclaringType state
-                        let obj = state.Assumptions.Heap.[newObjP]
-                        let state = obj.Fields |> Seq.fold (fun state (KeyValue(field, value)) ->
-                                        StateProcessing.setField args.[0] field value state
-                                    ) state
-                        state
-                    else
-                        state
-
-                e.InterpretMethod m2 state args services
-            else
-                e.InterpretMethod method state args services
-    }
+let reimplementDictionary =
+    Interpreter.reimplementType
+        (fun t -> t.Definition.FullName = "System.Collections.Generic.Dictionary`2")
+        (Interpreter.findMatchingMethodOnType (CecilTools.convertTypeToRaw typedefof<DictionaryReimpl<int, int>>))

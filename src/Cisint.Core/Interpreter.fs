@@ -912,6 +912,48 @@ let aBitSmartReadStaticField (f: FieldRef) (s: ExecutionState) services =
             return value, state
     }
 
+/// Replaces all invocations of method on types matched by `matchType` with invocations to methods determined by `findMethodReplacement`. It also initlizes the instance of this type before the constructor is called.
+let reimplementType matchType findMethodReplacement (e: ExecutionServices) =
+    { e with
+        InterpretMethod = fun method state args services ->
+            if matchType method.DeclaringType then
+                let m2 : MethodRef = findMethodReplacement method |> Option.defaultWith (fun x -> failwithf "Could not find reimplementation for %O" method)
+
+                let state =
+                    if method.Name = ".ctor" then
+                        // initialize the object before invoking constructor
+                        let (newObjP, state) = StateProcessing.createEmptyHeapObject m2.DeclaringType state
+                        let obj = state.Assumptions.Heap.[newObjP]
+                        let state = obj.Fields |> Seq.fold (fun state (KeyValue(field, value)) ->
+                                        StateProcessing.setField args.[0] field value state
+                                    ) state
+                        state
+                    else
+                        state
+
+                e.InterpretMethod m2 state args services
+            else
+                e.InterpretMethod method state args services
+    }
+
+/// Finds method on `baseType` that matches the signature and name of the `method`
+/// This function may be useful as a argument to `reimplementType` for searching the matching method replacement
+let findMatchingMethodOnType baseType (method: MethodRef) =
+    let getType (baseType:Mono.Cecil.TypeDefinition) (t: TypeRef) =
+        // let rawType = CecilTools.convertTypeToRaw typedefof<DictionaryReimpl<int, int>>
+        let generic = Mono.Cecil.GenericInstanceType baseType
+        t.Definition.GenericParameters |> Seq.iter generic.GenericArguments.Add
+        TypeRef (generic.ResolvePreserve t.GenericParameterAssigner)
+
+    let dt = getType baseType method.DeclaringType
+    let translateArgType (t: TypeRef) =
+        TypeRef (t.Reference.ResolvePreserve (fun t -> if TypeRef.AreSameTypes t method.DeclaringType.Reference then
+                                                           Some dt.Reference
+                                                       else None))
+    dt.Methods |> Seq.tryFind (fun m ->
+        m.Name = method.Name && m.ParameterTypes.Length = method.ParameterTypes.Length && (m.ParameterTypes |> IArray.map translateArgType) = (method.ParameterTypes |> IArray.map translateArgType))
+
+
 let createDispatcher logger : InterpreterFrameDispatcher =
     fun frameInfo fn ->
         logger frameInfo
