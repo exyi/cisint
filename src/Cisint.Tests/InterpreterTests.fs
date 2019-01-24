@@ -9,6 +9,10 @@ open Cisint.Tests.TestInputs
 open FSharp.Control.Tasks.V2
 open TypesystemDefinitions
 open StateProcessing
+open CheckTestOutput
+
+let check = CheckTestOutput("testoutputs")
+
 let testMethod =
     let t = (CecilTools.convertType typeof<Something>)
     let tCsharp = (CecilTools.convertType typeof<Cisint.CsharpTestInputs.Class1>)
@@ -126,7 +130,7 @@ let ``Simple int array - UseSomeArrays`` () = task {
     let! result1, formatted = interpretMethod "UseSomeArrays" "general" state [ SExpr.Parameter paramA; SExpr.Parameter paramB ]
     Assert.Equal(0, result1.SideEffects.Count)
     Assert.DoesNotContain(".heapState", formatted)
-    Assert.Equal("if (a = b) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    check.CheckString formatted
 }
 
 [<Fact>]
@@ -135,7 +139,7 @@ let ``Simple int array constants - UseSomeArrays`` () = task {
     let! result1, formatted = interpretMethod "UseSomeArrays" "constant_a" state [ SExpr.ImmConstant 2; SExpr.Parameter paramB ]
     Assert.Equal(0, result1.SideEffects.Count)
     Assert.DoesNotContain(".heapState", formatted)
-    Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    check.CheckString formatted
 }
 
 [<Fact>]
@@ -145,6 +149,7 @@ let ``Simple enum processing - UseEnums`` () = task {
     Assert.Equal(0, result1.SideEffects.Count)
     Assert.DoesNotContain(".heapState", formatted)
     // Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    check.CheckString formatted
 }
 
 [<Fact>]
@@ -164,6 +169,7 @@ let ``Simple object processing - UseGenericUnion`` () = task {
     // Assert.Equal(0, result1.SideEffects.Count)
     // Assert.DoesNotContain(".heapState", formatted)
     // Assert.Equal("if (b = 2) {\n\t42\n} else {\n\t(b + 1)\n}", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    check.CheckString (formatted.Replace((result1.ChangedHeapObjects |> List.head).Name , "o103"))
     ()
 }
 
@@ -176,6 +182,7 @@ let ``SimpleTryFinally`` () = task {
     Assert.Equal("true", ExprFormat.exprToString c)
     Assert.Equal("a", ExprFormat.exprToString args.[0])
     Assert.Equal("SideEffect1", m.Reference.Name)
+    check.CheckString (formatted.Replace ((result1.ChangedHeapObjects |> List.head).Name, "o56"))
     ()
 }
 
@@ -231,17 +238,7 @@ let ``create object - ReturnObject`` () = task {
     let paramA = SParameter.New (CecilTools.convertType typeof<int>) "a"
     let! result1, formatted = interpretMethod "ReturnObject" "generic" state [ SExpr.Parameter paramA ]
     let resultP = result1.ChangedHeapObjects |> List.head
-    Assert.Equal("""
-                .heapState {
-                    let o154 = new System.Tuple`2<System.Int32,System.Int32>
-                    o154.m_Item1 = a
-                    o154.m_Item2 = (a + 1)
-                }
-
-                return [
-                    o154
-                ]
-                 """.Replace("o154", resultP.Name) |> removeWhitespace, removeWhitespace formatted)
+    check.CheckString(formatted.Replace(resultP.Name, "o154"))
 }
 
 [<Fact>]
@@ -255,6 +252,7 @@ let ``do stuff with object - DoStuffWithTuple`` () = task {
 let ``iterators and lambdas - FSharpLambdasAndSeq`` () = task {
     let! result1, formatted = interpretMethod "FSharpLambdasAndSeq" "constant_a" state [ SExpr.ImmConstant 1 ]
     Assert.Equal(sprintf "%d" (Something.FSharpLambdasAndSeq 1), List.exactlyOne result1.Stack |> ExprFormat.exprToString)
+    check.CheckString formatted
 }
 
 
@@ -268,6 +266,8 @@ let ``hash table constant - UseHashTable`` () = task {
     Assert.DoesNotContain(".heapState", formatted2)
     Assert.Equal("\"lol\"", List.exactlyOne result1.Stack |> ExprFormat.exprToString)
     Assert.Equal("\"a\"", List.exactlyOne result2.Stack |> ExprFormat.exprToString)
+    check.CheckString(formatted1, checkName = "const2")
+    check.CheckString(formatted2, checkName = "const43")
     ()
 }
 
@@ -276,6 +276,7 @@ let ``hash table constant - UseHashTable`` () = task {
 let ``hash table - PlayWithSomeControl`` () = task {
     let paramWriter = SParameter.New (CecilTools.convertType typeof<Cisint.CsharpTestInputs.IWriter>) "writer"
     let! result1, formatted1 = interpretMethod "PlayWithSomeControl" "constant_mode" state [ SExpr.Parameter paramWriter; SExpr.ImmConstant 0 ]
+
     // let! result2, formatted2 = interpretMethod "PlayWithSomeControl" "constant_b" state [ SExpr.ImmConstant 43 ]
     // Assert.Equal(0, result1.SideEffects.Count)
     // Assert.Equal(0, result2.SideEffects.Count)

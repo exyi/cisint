@@ -1,0 +1,12 @@
+se60 := .static [FieldRef
+  System.Collections.IEqualityComparer <StartupCode$FSharp-Core>.$Prim-types::GenericEqualityComparer@2071]
+.heapState {
+	let o103 = new System.Tuple`2<System.Int32,System.Int32>
+	o103.m_Item1 = (a + a)
+	o103.m_Item2 = (a + (-1640531527 + (((a + -1640531463) << 6) + ((a + -1640531463) >> 2))))
+	
+}
+
+return [
+	o103
+]

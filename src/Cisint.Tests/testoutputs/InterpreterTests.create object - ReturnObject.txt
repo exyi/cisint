@@ -1,0 +1,11 @@
+
+.heapState {
+	let o154 = new System.Tuple`2<System.Int32,System.Int32>
+	o154.m_Item1 = a
+	o154.m_Item2 = (a + 1)
+	
+}
+
+return [
+	o154
+]

@@ -1,0 +1,5 @@
+
+
+return [
+	((1 = Convert<System.Int32>(b)) | ((2 = Convert<System.Int32>(b)) | ((3 = Convert<System.Int32>(b)) | ((4 = Convert<System.Int32>(b)) | (6432 = Convert<System.Int32>(b))))))
+]

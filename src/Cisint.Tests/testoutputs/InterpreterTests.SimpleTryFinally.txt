@@ -1,0 +1,10 @@
+o56 := global. System.String Cisint.Tests.TestInputs.Something::SideEffect1(System.Int32)(a)
+.heapState {
+	let o56 = new System.String
+	shared o56
+	
+}
+
+return [
+	o56
+]
